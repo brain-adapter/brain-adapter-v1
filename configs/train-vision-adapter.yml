@@ -1,0 +1,60 @@
+trainer:
+  task: train_only
+  seed: 2024
+  save_directory: /root/autodl-tmp/pretrained
+  val_check_interval: 2000
+  max_epochs: 4
+  num_devices: 2
+
+  checkpoint:
+    dirpath: /root/autodl-tmp/ckpts
+    monitor: step
+    filename: lit-{step}
+    save_top_k: 4
+    mode: max
+    every_n_train_steps: 2000
+    save_last: true
+
+# for Tensorboard logger
+logger:
+    save_dir: /root/tf-logs
+    sub_dir: logs
+    image_dir: images
+    name: vision-adapter
+    version: 5-95
+    default_hp_metric: false
+
+lightning:
+  diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
+  snr_gamma: 5.0
+  condition_encoder:
+    name: model.models.VisionResamperModel
+    pretrained_model_path: /root/autodl-tmp/pretrained/vit-resampler
+
+model:
+  input_size: 768
+  num_tokens: 4
+
+dataset: 
+  name: data.dataset.ImageTextDataset
+  num_workers: 8 # num_devices * 4
+  resolution: 512
+
+  meta_files:
+    train: /root/autodl-tmp/data/meta/meta-train.parquet
+    val: /root/autodl-tmp/data/meta/meta-val.parquet
+
+  batch_size:
+    train: 8
+    val: 4
+
+  image_root_path: /root/autodl-tmp/data/ada10m/images
+  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
+  diffusion_model_path: *diffusion_model_path
+
+# constant learning rate
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 1.e-4
+    weight_decay: 0.01
