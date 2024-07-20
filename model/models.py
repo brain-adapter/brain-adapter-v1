@@ -427,10 +427,14 @@ class AdapterPipeline:
 
         if cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
-        elif cond_embeds is not None or uncond_embeds is not None:
+        elif cond_embeds is not None and uncond_embeds is None:
             raise ValueError(
-                "[cond_embeds] and [uncond_embeds] should be both none or not none"
+                "Got [cond_embeds], but [uncond_embeds] is missing"
             )
+        elif cond_embeds is None and uncond_embeds is not None:
+            raise ValueError(
+                "Got [uncond_embeds], but [cond_embeds] is missing"
+            )            
 
         num_prompts = cond_embeds.shape[0]
         num_images_per_prompt = (
