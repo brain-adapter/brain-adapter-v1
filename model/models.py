@@ -14,7 +14,7 @@ from PIL import Image
 
 from model.modules import (
     AttnProcessor,
-    IPAttnProcessor,
+    VisionAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,
     get_class,
@@ -280,7 +280,7 @@ class AdapterModel(PreTrainedModel):
                     "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"],
                     "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"],
                 }
-                attn_procs[name] = IPAttnProcessor(
+                attn_procs[name] = VisionAttnProcessor(
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
@@ -380,7 +380,7 @@ class AdapterPipeline:
 
     def set_scale(self, scale: float):
         for attn_processor in self.pipeline.unet.attn_processors.values():
-            if isinstance(attn_processor, IPAttnProcessor):
+            if isinstance(attn_processor, VisionAttnProcessor):
                 attn_processor.scale = scale
 
     @torch.inference_mode()

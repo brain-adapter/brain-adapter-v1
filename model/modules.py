@@ -594,7 +594,7 @@ class AttnProcessor(torch.nn.Module):
         return hidden_states
 
 
-class IPAttnProcessor(torch.nn.Module):
+class VisionAttnProcessor(torch.nn.Module):
     r"""
     Attention processor for IP-Adapater for PyTorch 2.0.
     Args:
@@ -617,7 +617,7 @@ class IPAttnProcessor(torch.nn.Module):
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
         # gated scale
-        self.scale = nn.Parameter(0.0)
+        self.scale = nn.Parameter(torch.tensor(0.))
         self.num_tokens = num_tokens
 
         self.to_k_ip = nn.Linear(
