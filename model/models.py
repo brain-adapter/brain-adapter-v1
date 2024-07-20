@@ -253,6 +253,8 @@ class AdapterModel(PreTrainedModel):
         unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
         self.adapter_modules = nn.ModuleList(self._process_unet(unet).values())
 
+        self.apply(self._init_weights)
+
     def _process_unet(self, unet: UNet2DConditionModel, num_tokens: int = 4) -> Dict:
         attn_procs = {}
         unet_sd = unet.state_dict()
