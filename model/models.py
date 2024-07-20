@@ -425,9 +425,9 @@ class AdapterPipeline:
 
         if cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
-        else:
+        elif cond_embeds is not None or uncond_embeds is not None:
             raise ValueError(
-                "[cond_embeds] and [uncond_embeds] should not be None at the same time"
+                "[cond_embeds] and [uncond_embeds] should be both none or not none"
             )
 
         num_prompts = cond_embeds.shape[0]
