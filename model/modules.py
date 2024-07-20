@@ -485,7 +485,7 @@ class AdapterProjection(nn.Module):
         return norm_tokens
 
 
-class AttnProcessor(torch.nn.Module):
+class AttnProcessor(nn.Module):
     r"""
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
     """
@@ -594,7 +594,7 @@ class AttnProcessor(torch.nn.Module):
         return hidden_states
 
 
-class VisionAttnProcessor(torch.nn.Module):
+class VisionAttnProcessor(nn.Module):
     r"""
     Attention processor for IP-Adapater for PyTorch 2.0.
     Args:
