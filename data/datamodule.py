@@ -1,7 +1,7 @@
-from typing import Dict, Type
+from typing import Type
 import lightning
 from torch.utils.data import DataLoader
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 
 from model.modules import get_class
 
@@ -12,7 +12,7 @@ class DataModule(lightning.LightningDataModule):
         super().__init__()
         self.num_workers: int = config.get("num_workers", 4)
         self.dataset_class: Type = get_class(config.name)
-        self.batch_size: Dict = config.batch_size
+        self.batch_size: DictConfig = config.batch_size
 
         self.config = config
 
