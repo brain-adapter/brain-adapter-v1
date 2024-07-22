@@ -104,6 +104,14 @@ def main(config: DictConfig):
                 model.save_pretrained(model_save_directory)
             # remove lightning checkpoints
             os.remove(path)
+        if os.path.exists(ckpt_callback.last_model_path):
+            if config.trainer.get("save_directory", None) is not None:
+                model_save_directory = os.path.join(
+                    config.trainer.save_directory,
+                    "-".join([config.logger.name, step]),
+                )
+                model.save_pretrained(model_save_directory)
+            os.remove(ckpt_callback.last_model_path)
 
 
 if __name__ == "__main__":
