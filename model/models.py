@@ -29,7 +29,7 @@ class PreTrainedModel(nn.Module):
         super().__init__()
         self.config = config
 
-    def forward(self, eeg_values: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Cannot access the base model!")
 
     def _init_weights(self, module):
