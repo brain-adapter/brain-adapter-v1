@@ -108,7 +108,7 @@ def main(config: DictConfig):
             if config.trainer.get("save_directory", None) is not None:
                 model_save_directory = os.path.join(
                     config.trainer.save_directory,
-                    "-".join([config.logger.name, step]),
+                    "-".join([config.logger.name, "last"]),
                 )
                 model.save_pretrained(model_save_directory)
             os.remove(ckpt_callback.last_model_path)
