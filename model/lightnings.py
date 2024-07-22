@@ -93,7 +93,7 @@ class LitBaseModel(lightning.LightningModule):
         return [optimizer]
 
 
-class LitEEGKDModel(LitBaseModel):
+class LitBrainVisionModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 

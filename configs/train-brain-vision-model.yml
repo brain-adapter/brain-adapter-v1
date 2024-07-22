@@ -24,7 +24,7 @@ logger:
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitEEGKDModel
+  name: model.lightnings.LitBrainVisionModel
   pretrained_model_path: null
 
 model:
