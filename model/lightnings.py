@@ -383,7 +383,7 @@ class LitAdapterModel(LitBaseModel):
             num_inference_steps=num_inference_steps,
         )
 
-        save_dir = self.config.trainer.test.get("image_save_path", None)
+        save_dir = self.config.logger.get("image_dir", None)
         if save_dir is not None:
             # save generated images
             for i in range(len(condition_inputs)):

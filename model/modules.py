@@ -4,7 +4,6 @@ from torch import nn
 from omegaconf import DictConfig
 import torch.nn.functional as F
 
-
 from .activations import get_activation
 
 

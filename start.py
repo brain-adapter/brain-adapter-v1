@@ -74,6 +74,9 @@ def create_embeds(
         torch.mps.empty_cache()
 
 
+def create_val_meta():
+    pass
+
 def main(args: Namespace):
     for clip_model_path in args.clip_model_list:
         create_embeds(
