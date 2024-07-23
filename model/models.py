@@ -151,8 +151,8 @@ class BrainVisionModel(PreTrainedModel):
         return eeg_embeds, vision_embeds
 
     def save_pretrained(self, save_directory: str):
-        self.vision_model.save_pretrained(os.path.join(save_directory, "vision_model"))
-        self.eeg_model.save_pretrained(os.path.join(save_directory, "eeg_model"))
+        self.vision_model.save_pretrained(os.path.join(save_directory, "vision-model"))
+        self.eeg_model.save_pretrained(os.path.join(save_directory, "eeg-model"))
 
         # save config
         config_path = os.path.join(save_directory, "config.yml")
