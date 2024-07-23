@@ -36,7 +36,7 @@ def create_embeds(
             }
         )
     )
-    imagenet_dataloader = DataLoader(dataset=image_net_dataset, batch_size=16)
+    imagenet_dataloader = DataLoader(dataset=image_net_dataset, batch_size=16, shuffle=False)
 
     gpu = (
         torch.device("cuda")
@@ -53,7 +53,7 @@ def create_embeds(
 
     clip_embeds_ = []
 
-    for batch in tqdm(imagenet_dataloader, desc=f"creating embeds for {version}"):
+    for batch in tqdm(imagenet_dataloader, desc=f"Creating embeds for {version}"):
         pixel_values: torch.Tensor = batch["pixel_values"].to(gpu)
         with torch.inference_mode():
             clip_embeds_batch = clip_model(
@@ -89,9 +89,12 @@ def create_val_meta(
 
     if not os.path.exists(save_dir_path):
         os.makedirs(save_dir_path)
+    image_directory = os.path.join(save_dir_path, "images")
+    if not os.path.exists(image_directory):
+        os.makedirs(image_directory)
 
     metadata_val = []
-    for label in label_meta:
+    for label in tqdm(label_meta, desc="Creating validation data..."):
         image_columns = [image for image in image_meta if image.startswith(label)]
         image_columns = random.sample(image_columns, k=num_images_per_class)
 

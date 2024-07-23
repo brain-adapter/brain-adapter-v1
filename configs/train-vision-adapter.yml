@@ -39,14 +39,11 @@ dataset:
   name: data.dataset.ImageTextDataset
   num_workers: 8 # num_devices * 4
   resolution: 512
+  batch_size: 8
 
   meta_files:
     train: /root/autodl-tmp/data/meta/meta-train.parquet
     val: /root/autodl-tmp/data/meta/meta-val.parquet
-
-  batch_size:
-    train: 8
-    val: 4
 
   image_root_path: 
     train: /root/autodl-tmp/data/images

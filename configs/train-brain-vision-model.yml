@@ -60,11 +60,7 @@ dataset:
 
   num_workers: 4 # num_devices * 4
   subject: 0 # 0 means using data of all subjects
-
-  batch_size:
-    train: 16
-    val: 16
-    test: 16
+  batch_size: 16
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth

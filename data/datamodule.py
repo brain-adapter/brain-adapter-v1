@@ -12,7 +12,7 @@ class DataModule(lightning.LightningDataModule):
         super().__init__()
         self.num_workers: int = config.get("num_workers", 4)
         self.dataset_class: Type = get_class(config.name)
-        self.batch_size: DictConfig = config.batch_size
+        self.batch_size:int = config.batch_size
 
         self.config = config
 
@@ -30,7 +30,7 @@ class DataModule(lightning.LightningDataModule):
     def train_dataloader(self):
         return DataLoader(
             self.trainset,
-            batch_size=self.batch_size.train,
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=True,
             persistent_workers=True,
@@ -40,7 +40,7 @@ class DataModule(lightning.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.valset,
-            batch_size=self.batch_size.val,
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=False,
             persistent_workers=True,
@@ -50,7 +50,7 @@ class DataModule(lightning.LightningDataModule):
     def test_dataloader(self):
         return DataLoader(
             self.testset,
-            batch_size=self.batch_size.test,
+            batch_size=self.batch_size,
             num_workers=self.num_workers,
             shuffle=False,
             persistent_workers=True,
