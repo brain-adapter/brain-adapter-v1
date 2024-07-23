@@ -34,7 +34,7 @@ class DataModule(lightning.LightningDataModule):
             num_workers=self.num_workers,
             shuffle=True,
             persistent_workers=True,
-            drop_last=True,
+            drop_last=False,
         )
 
     def val_dataloader(self):
@@ -44,7 +44,7 @@ class DataModule(lightning.LightningDataModule):
             num_workers=self.num_workers,
             shuffle=False,
             persistent_workers=True,
-            drop_last=True,
+            drop_last=False,
         )
 
     def test_dataloader(self):

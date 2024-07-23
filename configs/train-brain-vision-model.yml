@@ -1,9 +1,9 @@
 trainer:
   task: train_and_test_with_best
   seed: 2024
-  save_directory: /root/autodl-tmp/pretrained
+  save_directory: /root/autodl-tmp/md-ckpts
   check_val_every_n_epoch: 1
-  max_epochs: 50
+  max_epochs: 5
   num_devices: 1
 
   checkpoint:
@@ -19,7 +19,7 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-vision-alignment
+    name: brain-vision-model
     version: 5-95
     default_hp_metric: false
 
@@ -64,7 +64,9 @@ dataset:
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  clip_embeds_path: data/embeddings/clip-vit-l-14-embeds.bin
+  clip_embeds_path: /root/autodl-tmp/data/eeg-imagenet/embeds/clip-vit-l-14-embeds.bin
+
+  merge_train_and_val: true
 
 
 optimizer:

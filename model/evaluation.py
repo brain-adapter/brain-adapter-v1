@@ -4,7 +4,6 @@ import torch
 import PIL
 import numpy as np
 from torchvision import transforms
-from diffusers import StableDiffusionPipeline
 
 
 def pt_to_numpy(images: torch.FloatTensor) -> np.ndarray:

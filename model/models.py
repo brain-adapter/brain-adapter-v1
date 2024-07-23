@@ -173,10 +173,10 @@ class BrainVisionModel(PreTrainedModel):
             # overwrite
             config = copy.deepcopy(config)
 
-        vision_model_path = os.path.join(pretrained_model_path, "vision_model")
+        vision_model_path = os.path.join(pretrained_model_path, "vision-model")
         vision_model = EncoderModel.from_pretrained(vision_model_path)
 
-        eeg_model_path = os.path.join(pretrained_model_path, "eeg_model")
+        eeg_model_path = os.path.join(pretrained_model_path, "eeg-model")
         eeg_model = EncoderModel.from_pretrained(eeg_model_path)
 
         model = cls(config)
@@ -192,7 +192,7 @@ class VisionResamperModel(PreTrainedModel):
     """
 
     def __init__(self, config: DictConfig):
-        super().__init__()
+        super().__init__(config)
         self._clip_skip = config.get("clip_skip", 1)
         self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
         self.resampler_model = EncoderModel.from_pretrained(config.resampler_model_path)
@@ -285,7 +285,7 @@ class AdapterModel(PreTrainedModel):
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
                 )
-                attn_procs[name].load_state_dict(weights)
+                attn_procs[name].load_state_dict(weights, strict=False)
 
         return attn_procs
 
@@ -294,7 +294,7 @@ class AdapterModel(PreTrainedModel):
 
     def bind_unet(self, unet: UNet2DConditionModel):
         unet.set_attn_processor(
-            AdapterModel._process_unet(unet, num_tokens=self.num_tokens)
+            self._process_unet(unet, num_tokens=self.num_tokens)
         )
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
@@ -303,7 +303,7 @@ class AdapterModel(PreTrainedModel):
     def from_unet(
         cls, unet: UNet2DConditionModel, config: DictConfig
     ) -> PreTrainedModel:
-        unet_config = OmegaConf.create(unet.config)
+        unet_config = OmegaConf.create(dict(**unet.config))
         OmegaConf.update(config, "unet_config", unet_config)
         OmegaConf.update(config, "cross_attention_dim", unet.config.cross_attention_dim)
 

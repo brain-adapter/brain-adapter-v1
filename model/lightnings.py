@@ -13,11 +13,9 @@ from diffusers import (
     AutoencoderKL,
     DDPMScheduler,
     StableDiffusionPipeline,
+    PNDMScheduler,
 )
-from transformers import (
-    CLIPTextModel,
-    CLIPVisionModelWithProjection,
-)
+from transformers import CLIPTextModel, CLIPVisionModelWithProjection, CLIPTokenizer
 
 from model.models import (
     EncoderModel,
@@ -188,7 +186,7 @@ class LitAdapterModel(LitBaseModel):
         )
 
         # load adapter model
-        unet_config = OmegaConf.create(self.unet.config)
+        unet_config = OmegaConf.create(dict(**self.unet.config))
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
             self.model: AdapterModel = AdapterModel.from_pretrained(
@@ -306,12 +304,18 @@ class LitAdapterModel(LitBaseModel):
     @override
     def validation_step(self, batch, batch_idx) -> torch.Tensor:
         pipeline = AdapterPipeline(
-            StableDiffusionPipeline.from_pretrained(
-                self.diffusion_model_path,
+            StableDiffusionPipeline(
                 unet=self.unet,
                 vae=self.vae,
+                tokenizer=CLIPTokenizer.from_pretrained(
+                    self.diffusion_model_path, subfolder="tokenizer"
+                ),
+                scheduler=PNDMScheduler.from_pretrained(
+                    self.diffusion_model_path, subfolder="scheduler"
+                ),
                 text_encoder=self.text_encoder,
                 safety_checker=None,
+                requires_safety_checker=False,
             ),
             device=self.device,
             dtype=self.dtype,
@@ -346,12 +350,18 @@ class LitAdapterModel(LitBaseModel):
     @override
     def test_step(self, batch, batch_idx):
         pipeline = AdapterPipeline(
-            StableDiffusionPipeline.from_pretrained(
-                self.diffusion_model_path,
+            StableDiffusionPipeline(
                 unet=self.unet,
                 vae=self.vae,
+                tokenizer=CLIPTokenizer.from_pretrained(
+                    self.diffusion_model_path, subfolder="tokenizer"
+                ),
+                scheduler=PNDMScheduler.from_pretrained(
+                    self.diffusion_model_path, subfolder="scheduler"
+                ),
                 text_encoder=self.text_encoder,
                 safety_checker=None,
+                requires_safety_checker=False,
             ),
             device=self.device,
             dtype=self.dtype,
@@ -383,11 +393,14 @@ class LitAdapterModel(LitBaseModel):
             num_inference_steps=num_inference_steps,
         )
 
-        save_dir = self.config.logger.get("image_dir", None)
-        if save_dir is not None:
+        log_directory = self.logger.log_dir
+        if log_directory is not None:
+            save_directory = os.path.join(log_directory, "images")
             # save generated images
             for i in range(len(condition_inputs)):
                 for j in range(num_images_per_prompt):
                     image: Image = images[i * num_images_per_prompt + j]
-                    save_path = os.path.join(save_dir, f"{image_indexes[i]}_{j}.png")
+                    save_path = os.path.join(
+                        save_directory, f"{image_indexes[i]}_{j}.png"
+                    )
                     image.save(save_path)

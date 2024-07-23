@@ -4,13 +4,13 @@ trainer:
   save_directory: /root/autodl-tmp/pretrained
   val_check_interval: 2000
   max_epochs: 4
-  num_devices: 2
+  num_devices: 1
 
   checkpoint:
     dirpath: /root/autodl-tmp/ckpts
     monitor: step
     filename: lit-{step}
-    save_top_k: 4
+    save_top_k: 3
     mode: max
     every_n_train_steps: 2000
     save_last: true
@@ -19,12 +19,12 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    image_dir: images
     name: vision-adapter
     version: 5-95
     default_hp_metric: false
 
 lightning:
+  name: model.lightnings.LitAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
   snr_gamma: 5.0
   condition_encoder:
@@ -37,17 +37,17 @@ model:
 
 dataset: 
   name: data.dataset.ImageTextDataset
-  num_workers: 8 # num_devices * 4
+  num_workers: 4 # num_devices * 4
   resolution: 512
   batch_size: 8
 
   meta_files:
-    train: /root/autodl-tmp/data/meta/meta-train.parquet
-    val: /root/autodl-tmp/data/meta/meta-val.parquet
+    train: /root/autodl-tmp/data/ada10m-en/train/meta-train.parquet
+    val: /root/autodl-tmp/data/ada10m-en/validation/meta-val.parquet
 
   image_root_path: 
-    train: /root/autodl-tmp/data/images
-    val: /root/autodl-tmp/data/val-images
+    train: /root/autodl-tmp/data/ada10m-en/train/images
+    val: /root/autodl-tmp/data/ada10m-en/validation/images
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
   diffusion_model_path: *diffusion_model_path
 

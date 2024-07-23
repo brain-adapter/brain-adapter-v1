@@ -99,15 +99,14 @@ def create_val_meta(
         image_columns = random.sample(image_columns, k=num_images_per_class)
 
         for image in image_columns:
-            local_path = os.path.join(label, ".".join([image, "JPEG"]))
-
-            image_src = os.path.join(data_root_path, "images", local_path)
-            image_dst = os.path.join(save_dir_path, "images", ".".join([image, "JPEG"]))
+            image_file = ".".join([image, "JPEG"])
+            image_src = os.path.join(data_root_path, "images", label, image_file)
+            image_dst = os.path.join(save_dir_path, "images", image_file)
             shutil.copy(image_src, image_dst)
 
             metadata_val.append(
                 {
-                    "local_file": local_path,
+                    "local_file": image_file,
                     "caption": "",  # do not need caption
                 }
             )
