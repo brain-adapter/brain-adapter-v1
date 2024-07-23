@@ -48,7 +48,9 @@ dataset:
     train: 8
     val: 4
 
-  image_root_path: /root/autodl-tmp/data/ada10m/images
+  image_root_path: 
+    train: /root/autodl-tmp/data/images
+    val: /root/autodl-tmp/data/val-images
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
   diffusion_model_path: *diffusion_model_path
 

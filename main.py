@@ -1,6 +1,7 @@
 import os
 from argparse import ArgumentParser
 from enum import Enum
+from typing import Optional
 from pathlib2 import Path
 
 import torch
@@ -20,6 +21,12 @@ class Task(Enum):
     TRAIN_AND_TEST_WITH_BEST = 2
     TRAIN_AND_TEST_WITH_LAST = 3
     TEST_ONLY = 4
+
+
+def save_model(model: Optional[LitBaseModel], save_directory: Optional[str]):
+    if model is None or save_directory is None:
+        return
+    model.save_pretrained(save_directory)
 
 
 def main(config: DictConfig):
@@ -90,27 +97,26 @@ def main(config: DictConfig):
     if task != Task.TRAIN_ONLY:
         trainer.test(model, datamodule=datamodule)
 
+    # save model
     if ckpt_callback is not None and task != Task.TEST_ONLY:
         ckpt_paths = ckpt_callback.best_k_models.keys()
+        save_directory = config.trainer.get("save_directory", None)
+
         for path in ckpt_paths:
             model = model_class.load_from_checkpoint(path, map_location="cpu")
             step = Path(path).stem.split("-")[1]
             # save weights and config only
-            if config.trainer.get("save_directory", None) is not None:
-                model_save_directory = os.path.join(
-                    config.trainer.save_directory,
-                    "-".join([config.logger.name, step]),
-                )
-                model.save_pretrained(model_save_directory)
+            save_model(
+                model,
+                os.path.join(save_directory, "-".join([config.logger.name, step])),
+            )
             # remove lightning checkpoints
             os.remove(path)
         if os.path.exists(ckpt_callback.last_model_path):
-            if config.trainer.get("save_directory", None) is not None:
-                model_save_directory = os.path.join(
-                    config.trainer.save_directory,
-                    "-".join([config.logger.name, "last"]),
-                )
-                model.save_pretrained(model_save_directory)
+            save_model(
+                model,
+                os.path.join(save_directory, "-".join([config.logger.name, "last"])),
+            )
             os.remove(ckpt_callback.last_model_path)
 
 

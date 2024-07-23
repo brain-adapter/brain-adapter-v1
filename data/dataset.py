@@ -156,7 +156,7 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         image_path = os.path.join(
             self.image_root_path,
             image_name.split("_")[0],
-            image_name + self.config.image_ext,
+            ".".join([image_name, self.config.image_ext]),
         )
         raw_image = Image.open(image_path).convert("RGB")
 
@@ -198,7 +198,7 @@ class ImageTextDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig):
         super().__init__()
         self.config = config
-        self.image_root_path = config.image_root_path
+        self.image_root_path = config.image_root_path[mode]
         self.resolution = config.get("resolution", 512)
         self.mode = mode
 
@@ -229,7 +229,9 @@ class ImageTextDataset(Dataset):
         return len(self.meta)
 
     def __getitem__(self, index) -> Dict:
-        image_path = os.path.join(self.image_root_path, self.meta.iloc[index]["local_file"])
+        image_path = os.path.join(
+            self.image_root_path, self.meta.iloc[index]["local_file"]
+        )
         raw_image = Image.open(image_path).convert("RGB")
 
         clip_pixel_values: torch.Tensor = self.clip_processor(
@@ -289,7 +291,7 @@ class ImageNetDataset(Dataset):
         image_name = self.image_meta[index]
         folder_name = image_name.split("_")[0]
         image_path = os.path.join(
-            self.image_root, folder_name, image_name + self.image_ext
+            self.image_root, folder_name, ".".join([image_name, self.image_ext])
         )
 
         raw_image = Image.open(image_path).convert("RGB")
