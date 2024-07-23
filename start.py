@@ -128,7 +128,7 @@ if __name__ == "__main__":
         "--data-root-path", type=str, default="/root/autodl-tmp/data/eeg-imagenet"
     )
     parser.add_argument("--seed", type=int, default="2024")
-    parser.add_argument("--clip-model-list", nargs="+", default=[])
+    parser.add_argument("--clip-model-list", nargs="+", default=["/root/autodl-tmp/pretrained/clip-vit-l-14"])
     parser.add_argument(
         "--embeds-file-path", type=str, default="/root/autodl-tmp/data/eeg-imagenet/embeds"
     )
