@@ -304,18 +304,12 @@ class LitAdapterModel(LitBaseModel):
     @override
     def validation_step(self, batch, batch_idx) -> torch.Tensor:
         pipeline = AdapterPipeline(
-            StableDiffusionPipeline(
+            StableDiffusionPipeline.from_pretrained(
+                self.diffusion_model_path,
                 unet=self.unet,
                 vae=self.vae,
-                tokenizer=CLIPTokenizer.from_pretrained(
-                    self.diffusion_model_path, subfolder="tokenizer"
-                ),
-                scheduler=PNDMScheduler.from_pretrained(
-                    self.diffusion_model_path, subfolder="scheduler"
-                ),
                 text_encoder=self.text_encoder,
                 safety_checker=None,
-                requires_safety_checker=False,
             ),
             device=self.device,
             dtype=self.dtype,
@@ -337,6 +331,7 @@ class LitAdapterModel(LitBaseModel):
             output_type="pt",
         )
         images = images.cpu()
+        ground_truth = ground_truth.cpu()
 
         image_grid = torchvision.utils.make_grid(
             torch.cat([ground_truth, images], dim=0), nrow=images.shape[0], padding=4
@@ -350,18 +345,12 @@ class LitAdapterModel(LitBaseModel):
     @override
     def test_step(self, batch, batch_idx):
         pipeline = AdapterPipeline(
-            StableDiffusionPipeline(
+            StableDiffusionPipeline.from_pretrained(
+                self.diffusion_model_path,
                 unet=self.unet,
                 vae=self.vae,
-                tokenizer=CLIPTokenizer.from_pretrained(
-                    self.diffusion_model_path, subfolder="tokenizer"
-                ),
-                scheduler=PNDMScheduler.from_pretrained(
-                    self.diffusion_model_path, subfolder="scheduler"
-                ),
                 text_encoder=self.text_encoder,
                 safety_checker=None,
-                requires_safety_checker=False,
             ),
             device=self.device,
             dtype=self.dtype,

@@ -237,6 +237,7 @@ class ImageTextDataset(Dataset):
         clip_pixel_values: torch.Tensor = self.clip_processor(
             images=raw_image, return_tensors="pt"
         ).pixel_values
+
         diffusion_pixel_values = self.diffusion_processor(raw_image)
         ground_truth: Union[torch.Tensor, None] = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
@@ -267,7 +268,7 @@ class ImageTextDataset(Dataset):
         }
 
         if self.mode == "val":
-            data["ground_truth"] = ground_truth
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
         elif self.mode == "test":
             data["image_indexes"] = index
 

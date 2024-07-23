@@ -376,7 +376,8 @@ class AdapterPipeline:
 
         self.processor = processor
 
-        self.adapter_model.bind_unet(self.pipeline.unet)
+        if self.adapter_model is not None:
+            self.adapter_model.bind_unet(self.pipeline.unet)
 
     def set_scale(self, scale: float):
         for attn_processor in self.pipeline.unet.attn_processors.values():
@@ -422,8 +423,9 @@ class AdapterPipeline:
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        self.condition_model.to(self.device, self.dtype)
-        self.adapter_model.to(self.device, self.dtype)
+        if self.condition_model is not None and self.adapter_model is not None:
+            self.condition_model.to(self.device, self.dtype)
+            self.adapter_model.to(self.device, self.dtype)
 
         if cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
