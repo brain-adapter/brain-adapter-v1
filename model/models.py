@@ -293,7 +293,7 @@ class AdapterModel(PreTrainedModel):
                     num_tokens=num_tokens,
                     scale=scale,
                 )
-                attn_procs[name].load_state_dict(weights, strict=False)
+                attn_procs[name].load_state_dict(weights)
 
         return attn_procs
 
