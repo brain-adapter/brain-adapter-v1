@@ -3,6 +3,7 @@ from tqdm import tqdm
 from pathlib2 import Path
 from argparse import ArgumentParser, Namespace
 import random
+import shutil
 
 import torch
 import pandas
@@ -86,20 +87,27 @@ def create_val_meta(
     image_meta = torch.load(os.path.join(data_root_path, "eeg_5_95_std.pth"))["images"]
     label_meta = torch.load(os.path.join(data_root_path, "eeg_5_95_std.pth"))["labels"]
 
+    if not os.path.exists(save_dir_path):
+        os.makedirs(save_dir_path)
+
     metadata_val = []
     for label in label_meta:
         image_columns = [image for image in image_meta if image.startswith(label)]
         image_columns = random.sample(image_columns, k=num_images_per_class)
 
-        metadata_val.extend(
-            [
+        for image in image_columns:
+            local_path = os.path.join(label, ".".join([image, "JPEG"]))
+
+            image_src = os.path.join(data_root_path, "images", local_path)
+            image_dst = os.path.join(save_dir_path, "images", ".".join([image, "JPEG"]))
+            shutil.copy(image_src, image_dst)
+
+            metadata_val.append(
                 {
-                    "local_file": os.path.join(label, ".".join([image, "JPEG"])),
+                    "local_file": local_path,
                     "caption": "",  # do not need caption
                 }
-                for image in image_columns
-            ]
-        )
+            )
 
     # save validaion meta file
     pandas.DataFrame(metadata_val).to_parquet(
@@ -118,8 +126,10 @@ def main(args: Namespace):
             clip_skip=args.clip_skip,
             version=Path(clip_model_path).stem,
         )
-    
-    create_val_meta(data_root_path=args.data_root_path, save_dir_path=args.meta_directory)
+
+    create_val_meta(
+        data_root_path=args.data_root_path, save_dir_path=args.validation_directory
+    )
 
 
 if __name__ == "__main__":
@@ -128,11 +138,19 @@ if __name__ == "__main__":
         "--data-root-path", type=str, default="/root/autodl-tmp/data/eeg-imagenet"
     )
     parser.add_argument("--seed", type=int, default="2024")
-    parser.add_argument("--clip-model-list", nargs="+", default=["/root/autodl-tmp/pretrained/clip-vit-l-14"])
     parser.add_argument(
-        "--embeds-file-path", type=str, default="/root/autodl-tmp/data/eeg-imagenet/embeds"
+        "--clip-model-list",
+        nargs="+",
+        default=["/root/autodl-tmp/pretrained/clip-vit-l-14"],
     )
-    parser.add_argument("--meta-directory", type=str, default="/root/autodl-tmp/data/meta")
+    parser.add_argument(
+        "--embeds-file-path",
+        type=str,
+        default="/root/autodl-tmp/data/eeg-imagenet/embeds",
+    )
+    parser.add_argument(
+        "--validation-directory", type=str, default="/root/autodl-tmp/data/ada10m-en/validation"
+    )
     parser.add_argument("--clip-skip", type=int, default=1)
 
     args = parser.parse_args()
