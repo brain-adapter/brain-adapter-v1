@@ -245,17 +245,24 @@ class AdapterModel(PreTrainedModel):
         self.cross_attention_dim = config.get("cross_attention_dim", 768)
         self.input_size = config.get("input_size", 768)
         self.num_tokens = config.get("num_tokens", 4)
+        self.scale = config.get("scale", 1.0)
 
         self.projection = AdapterProjection(
             self.input_size, self.cross_attention_dim, self.num_tokens
         )
 
         unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
-        self.adapter_modules = nn.ModuleList(self._process_unet(unet).values())
+        self.adapter_modules = nn.ModuleList(
+            self._process_unet(
+                unet, num_tokens=self.num_tokens, scale=self.scale
+            ).values()
+        )
 
         self.apply(self._init_weights)
 
-    def _process_unet(self, unet: UNet2DConditionModel, num_tokens: int = 4) -> Dict:
+    def _process_unet(
+        self, unet: UNet2DConditionModel, num_tokens: int = 4, scale: float = 1.0
+    ) -> Dict:
         attn_procs = {}
         unet_sd = unet.state_dict()
         for name in unet.attn_processors.keys():
@@ -284,6 +291,7 @@ class AdapterModel(PreTrainedModel):
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
+                    scale=scale,
                 )
                 attn_procs[name].load_state_dict(weights, strict=False)
 
@@ -294,7 +302,7 @@ class AdapterModel(PreTrainedModel):
 
     def bind_unet(self, unet: UNet2DConditionModel):
         unet.set_attn_processor(
-            self._process_unet(unet, num_tokens=self.num_tokens)
+            self._process_unet(unet, num_tokens=self.num_tokens, scale=self.scale)
         )
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
@@ -309,7 +317,9 @@ class AdapterModel(PreTrainedModel):
 
         model = cls(config)
         adapter_modules = nn.ModuleList(
-            model._process_unet(unet, num_tokens=model.num_tokens).values()
+            model._process_unet(
+                unet, num_tokens=model.num_tokens, scale=model.scale
+            ).values()
         )
         model.adapter_modules.load_state_dict(adapter_modules.state_dict())
         return model
@@ -430,13 +440,9 @@ class AdapterPipeline:
         if cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
         elif cond_embeds is not None and uncond_embeds is None:
-            raise ValueError(
-                "Got [cond_embeds], but [uncond_embeds] is missing"
-            )
+            raise ValueError("Got [cond_embeds], but [uncond_embeds] is missing")
         elif cond_embeds is None and uncond_embeds is not None:
-            raise ValueError(
-                "Got [uncond_embeds], but [cond_embeds] is missing"
-            )            
+            raise ValueError("Got [uncond_embeds], but [cond_embeds] is missing")
 
         num_prompts = cond_embeds.shape[0]
         num_images_per_prompt = (

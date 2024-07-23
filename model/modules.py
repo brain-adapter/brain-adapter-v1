@@ -605,7 +605,13 @@ class VisionAttnProcessor(nn.Module):
             The context length of the image features.
     """
 
-    def __init__(self, hidden_size, cross_attention_dim=None, num_tokens=4):
+    def __init__(
+        self,
+        hidden_size: int,
+        cross_attention_dim: Optional[int] = None,
+        num_tokens: Optional[int] = None,
+        scale: Optional[float] = None,
+    ):
         super().__init__()
 
         if not hasattr(F, "scaled_dot_product_attention"):
@@ -616,8 +622,8 @@ class VisionAttnProcessor(nn.Module):
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
         # gated scale
-        self.scale = nn.Parameter(torch.tensor(0.))
-        self.num_tokens = num_tokens
+        self.scale = scale if scale is not None else 1.0
+        self.num_tokens = num_tokens if num_tokens is not None else 4
 
         self.to_k_ip = nn.Linear(
             cross_attention_dim or hidden_size, hidden_size, bias=False
@@ -729,7 +735,7 @@ class VisionAttnProcessor(nn.Module):
         )
         ip_hidden_states = ip_hidden_states.to(query.dtype)
 
-        hidden_states = hidden_states + self.scale.tanh() * ip_hidden_states
+        hidden_states = hidden_states + self.scale * ip_hidden_states
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)

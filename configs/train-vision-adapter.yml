@@ -34,6 +34,7 @@ lightning:
 model:
   input_size: 768
   num_tokens: 4
+  scale: 1.0
 
 dataset: 
   name: data.dataset.ImageTextDataset
