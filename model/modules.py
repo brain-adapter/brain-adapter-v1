@@ -474,8 +474,8 @@ class AdapterProjection(nn.Module):
         self.proj = nn.Linear(input_size, num_tokens * cross_attention_dim)
         self.norm = nn.LayerNorm(cross_attention_dim)
 
-    def forward(self, eeg_embeds: torch.Tensor):
-        context_tokens = self.proj(eeg_embeds).reshape(
+    def forward(self, condition_embeds: torch.Tensor):
+        context_tokens = self.proj(condition_embeds).reshape(
             -1, self.num_tokens, self.cross_attention_dim
         )
 
@@ -610,7 +610,6 @@ class VisionAttnProcessor(nn.Module):
         hidden_size: int,
         cross_attention_dim: Optional[int] = None,
         num_tokens: Optional[int] = None,
-        scale: Optional[float] = None,
     ):
         super().__init__()
 
@@ -621,9 +620,10 @@ class VisionAttnProcessor(nn.Module):
 
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
-        # gated scale
-        self.scale = scale if scale is not None else 1.0
         self.num_tokens = num_tokens if num_tokens is not None else 4
+
+        # gated scale
+        self.scale = nn.Parameter(torch.tensor(0.0))
 
         self.to_k_ip = nn.Linear(
             cross_attention_dim or hidden_size, hidden_size, bias=False
@@ -735,7 +735,7 @@ class VisionAttnProcessor(nn.Module):
         )
         ip_hidden_states = ip_hidden_states.to(query.dtype)
 
-        hidden_states = hidden_states + self.scale * ip_hidden_states
+        hidden_states = hidden_states + self.scale.tanh() * ip_hidden_states
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)

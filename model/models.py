@@ -238,6 +238,52 @@ class VisionResamperModel(PreTrainedModel):
         OmegaConf.save(self.config, config_path)
 
 
+class VisionProjectionModel(PreTrainedModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+        self.vision_model = CLIPVisionModelWithProjection.from_pretrained(
+            config.vision_model_path
+        )
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        image_embeds = self.vision_model(
+            pixel_values, output_hidden_states=False, return_dict=True
+        ).image_embeds
+
+        return image_embeds
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_path: Optional[str] = None,
+        config: Optional[DictConfig] = None,
+    ):
+        if not isinstance(config, DictConfig) and pretrained_model_path is not None:
+            conf_path = os.path.join(pretrained_model_path, "config.yml")
+            if not os.path.exists(conf_path):
+                raise FileNotFoundError(
+                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
+                )
+            config = OmegaConf.load(conf_path)
+        else:
+            assert config is not None
+            # overwrite
+            config = copy.deepcopy(config)
+
+        model = cls(config)
+        # Set model in evaluation mode to deactivate DropOut modules by default
+        model.eval()
+        return model
+
+    def save_pretrained(self, save_directory: str):
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+
+        config_path = os.path.join(save_directory, "config.yml")
+        # save the model config file as yaml
+        OmegaConf.save(self.config, config_path)
+
+
 class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
@@ -245,7 +291,6 @@ class AdapterModel(PreTrainedModel):
         self.cross_attention_dim = config.get("cross_attention_dim", 768)
         self.input_size = config.get("input_size", 768)
         self.num_tokens = config.get("num_tokens", 4)
-        self.scale = config.get("scale", 1.0)
 
         self.projection = AdapterProjection(
             self.input_size, self.cross_attention_dim, self.num_tokens
@@ -253,16 +298,12 @@ class AdapterModel(PreTrainedModel):
 
         unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
         self.adapter_modules = nn.ModuleList(
-            self._process_unet(
-                unet, num_tokens=self.num_tokens, scale=self.scale
-            ).values()
+            self._process_unet(unet, num_tokens=self.num_tokens).values()
         )
 
         self.apply(self._init_weights)
 
-    def _process_unet(
-        self, unet: UNet2DConditionModel, num_tokens: int = 4, scale: float = 1.0
-    ) -> Dict:
+    def _process_unet(self, unet: UNet2DConditionModel, num_tokens: int = 4) -> Dict:
         attn_procs = {}
         unet_sd = unet.state_dict()
         for name in unet.attn_processors.keys():
@@ -291,9 +332,8 @@ class AdapterModel(PreTrainedModel):
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
-                    scale=scale,
                 )
-                attn_procs[name].load_state_dict(weights)
+                attn_procs[name].load_state_dict(weights, strict=False)
 
         return attn_procs
 
@@ -301,9 +341,7 @@ class AdapterModel(PreTrainedModel):
         return self.projection(eeg_embeds)
 
     def bind_unet(self, unet: UNet2DConditionModel):
-        unet.set_attn_processor(
-            self._process_unet(unet, num_tokens=self.num_tokens, scale=self.scale)
-        )
+        unet.set_attn_processor(self._process_unet(unet, num_tokens=self.num_tokens))
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
@@ -317,9 +355,7 @@ class AdapterModel(PreTrainedModel):
 
         model = cls(config)
         adapter_modules = nn.ModuleList(
-            model._process_unet(
-                unet, num_tokens=model.num_tokens, scale=model.scale
-            ).values()
+            model._process_unet(unet, num_tokens=model.num_tokens).values()
         )
         model.adapter_modules.load_state_dict(adapter_modules.state_dict())
         return model
