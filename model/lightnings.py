@@ -300,7 +300,6 @@ class LitAdapterModel(LitBaseModel):
             loss = loss.mean()
 
         return {"loss": loss}
-    
 
     @override
     def validation_step(self, batch, batch_idx) -> torch.Tensor:
