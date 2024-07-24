@@ -196,7 +196,7 @@ class LitAdapterModel(LitBaseModel):
         elif config.lightning.get("ip_adapter_model_path", None) is not None:
             OmegaConf.update(config.model, "unet_config", unet_config)
             self.model: AdapterModel = AdapterModel.from_ip_adapter(
-                config.lightning.ip_adapter_model_path, config.model
+                self.unet, config.lightning.ip_adapter_model_path, config.model
             )
         # load from unet
         else:
@@ -261,7 +261,7 @@ class LitAdapterModel(LitBaseModel):
         condition_embeds_ = []
         for condition_embed, drop in zip(condition_embeds_without_drop, drops):
             condition_embeds_.append(
-                torch.where(drop, condition_embed, torch.zeros_like(condition_embed))
+                torch.where(drop, torch.zeros_like(condition_embed), condition_embed)
             )
         condition_embeds = torch.stack(condition_embeds_, dim=0)
         condition_embeds = self.model(condition_embeds)
