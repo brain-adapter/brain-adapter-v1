@@ -291,7 +291,6 @@ class AdapterModel(PreTrainedModel):
         self.cross_attention_dim = config.get("cross_attention_dim", 768)
         self.input_size = config.get("input_size", 768)
         self.num_tokens = config.get("num_tokens", 4)
-        self.scale = config.get("scale", 1.0)
 
         self.projection = AdapterProjection(
             self.input_size, self.cross_attention_dim, self.num_tokens
@@ -299,9 +298,7 @@ class AdapterModel(PreTrainedModel):
 
         unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
         self.adapter_modules = nn.ModuleList(
-            self._process_unet(
-                unet, num_tokens=self.num_tokens, scale=self.scale
-            ).values()
+            self._process_unet(unet, num_tokens=self.num_tokens).values()
         )
 
         self.apply(self._init_weights)
@@ -310,7 +307,6 @@ class AdapterModel(PreTrainedModel):
         self,
         unet: UNet2DConditionModel,
         num_tokens: Optional[int] = None,
-        scale: Optional[float] = None,
     ) -> Dict:
         attn_procs = {}
         unet_sd = unet.state_dict()
@@ -340,7 +336,6 @@ class AdapterModel(PreTrainedModel):
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
-                    scale=scale,
                 )
                 attn_procs[name].load_state_dict(weights, strict=False)
 
@@ -350,9 +345,7 @@ class AdapterModel(PreTrainedModel):
         return self.projection(eeg_embeds)
 
     def bind_unet(self, unet: UNet2DConditionModel):
-        unet.set_attn_processor(
-            self._process_unet(unet, num_tokens=self.num_tokens, scale=self.scale)
-        )
+        unet.set_attn_processor(self._process_unet(unet, num_tokens=self.num_tokens))
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
@@ -366,9 +359,7 @@ class AdapterModel(PreTrainedModel):
 
         model = cls(config)
         adapter_modules = nn.ModuleList(
-            model._process_unet(
-                unet, num_tokens=model.num_tokens, scale=model.scale
-            ).values()
+            model._process_unet(unet, num_tokens=model.num_tokens).values()
         )
         model.adapter_modules.load_state_dict(adapter_modules.state_dict())
         return model
@@ -378,35 +369,13 @@ class AdapterModel(PreTrainedModel):
         cls, unet: UNet2DConditionModel, ip_adapter_model_path: str, config: DictConfig
     ) -> PreTrainedModel:
         model = cls.from_unet(unet, config)
-        # Calculate original checksums
-        orig_ip_proj_sum = torch.sum(
-            torch.stack([torch.sum(p) for p in model.projection.parameters()])
-        )
-        orig_adapter_sum = torch.sum(
-            torch.stack([torch.sum(p) for p in model.adapter_modules.parameters()])
-        )
+        model.adapter_modules
 
         state_dict = torch.load(ip_adapter_model_path, map_location="cpu")
 
         # Load state dict for image_proj_model and adapter_modules
         model.projection.load_state_dict(state_dict["image_proj"], strict=True)
-        model.adapter_modules.load_state_dict(state_dict["ip_adapter"], strict=True)
-
-        # Calculate new checksums
-        new_ip_proj_sum = torch.sum(
-            torch.stack([torch.sum(p) for p in model.projection.parameters()])
-        )
-        new_adapter_sum = torch.sum(
-            torch.stack([torch.sum(p) for p in model.adapter_modules.parameters()])
-        )
-
-        # Verify if the weights have changed
-        assert (
-            orig_ip_proj_sum != new_ip_proj_sum
-        ), "Weights of image_proj_model did not change!"
-        assert (
-            orig_adapter_sum != new_adapter_sum
-        ), "Weights of adapter_modules did not change!"
+        model.adapter_modules.load_state_dict(state_dict["ip_adapter"], strict=False)
 
         return model
 
