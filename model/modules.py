@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Type
 import torch
 from torch import nn
 from omegaconf import DictConfig
@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .activations import get_activation
 
 
-def get_class(name: str) -> type:
+def get_class(name: str) -> Type:
     import importlib
 
     module_name, class_name = name.rsplit(".", 1)

@@ -110,7 +110,7 @@ class EncoderModel(PreTrainedModel):
     """
 
     def __init__(self, config: DictConfig):
-        super.__init__(config)
+        super().__init__(config)
 
         self.encoder = get_class(config.encoder_name)(config)
 
@@ -156,68 +156,6 @@ class EncoderProjectionModel(PreTrainedModel):
         return attn_maps
 
 
-class VisionResamperModel(PreTrainedModel):
-    """
-    Wrapper for CLIP-ViT Model
-    """
-
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-        self._clip_skip = config.get("clip_skip", 1)
-        # Make sure to set vision_model as non-trainable in lightning scripts
-        self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
-        self.resampler_model = EncoderModel(config.resampler_config)
-
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.vision_model(
-            pixel_values, output_hidden_states=True
-        ).hidden_states[-(self._clip_skip + 1)]
-
-        resample_features = self.resampler_model(hidden_states)
-
-        return resample_features
-
-    @classmethod
-    def from_pretrained(
-        cls,
-        pretrained_model_path: Optional[str] = None,
-        config: Optional[DictConfig] = None,
-    ):
-        if not isinstance(config, DictConfig) and pretrained_model_path is not None:
-            conf_path = os.path.join(pretrained_model_path, "config.yml")
-            if not os.path.exists(conf_path):
-                raise FileNotFoundError(
-                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
-                )
-            config = OmegaConf.load(conf_path)
-        else:
-            assert config is not None
-            # overwrite
-            config = copy.deepcopy(config)
-
-        model = cls(config)
-        model_path = os.path.join(pretrained_model_path, "pytorch_model.bin")
-        model.resampler_model.load_state_dict(
-            torch.load(model_path, map_location="cpu")
-        )
-        # Set model in evaluation mode to deactivate DropOut modules by default
-        model.eval()
-        return model
-
-    def save_pretrained(self, save_directory: str):
-        if not os.path.exists(save_directory):
-            os.makedirs(save_directory)
-
-        config_path = os.path.join(save_directory, "config.yml")
-        # save the model config file as yaml
-        OmegaConf.save(self.config, config_path)
-
-        model_path = os.path.join(save_directory, "pytorch_model.bin")
-        # save resampler only
-        model = self.cpu().resampler_model
-        torch.save(model.state_dict(), model_path)
-
-
 class VisionProjectionModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
@@ -237,7 +175,54 @@ class VisionProjectionModel(PreTrainedModel):
         cls,
         pretrained_model_path: Optional[str] = None,
         config: Optional[DictConfig] = None,
-    ):
+    ) -> PreTrainedModel:
+        if not isinstance(config, DictConfig) and pretrained_model_path is not None:
+            conf_path = os.path.join(pretrained_model_path, "config.yml")
+            if not os.path.exists(conf_path):
+                raise FileNotFoundError(
+                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
+                )
+            config = OmegaConf.load(conf_path)
+        else:
+            assert config is not None
+            # overwrite
+            config = copy.deepcopy(config)
+
+        model = cls(config)
+        # Set model in evaluation mode to deactivate DropOut modules by default
+        model.eval()
+        return model
+
+    def save_pretrained(self, save_directory: str):
+        if not os.path.exists(save_directory):
+            os.makedirs(save_directory)
+
+        config_path = os.path.join(save_directory, "config.yml")
+        # save the model config file as yaml
+        OmegaConf.save(self.config, config_path)
+
+
+class VisionModel(PreTrainedModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+        self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
+        self.clip_skip = config.get("clip_skip", 1)
+
+    def forward(self, pixel_values):
+        model_outputs = self.vision_model(
+            pixel_values, return_dict=True, output_hidden_states=True
+        )
+
+        embeds = model_outputs.hidden_states[self.clip_skip + 1]
+
+        return embeds
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_path: Optional[str] = None,
+        config: Optional[DictConfig] = None,
+    ) -> PreTrainedModel:
         if not isinstance(config, DictConfig) and pretrained_model_path is not None:
             conf_path = os.path.join(pretrained_model_path, "config.yml")
             if not os.path.exists(conf_path):
@@ -365,8 +350,9 @@ class AdapterPipeline:
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
         condition_model: Optional[
-            Union[VisionResamperModel, EncoderProjectionModel, VisionProjectionModel]
+            Union[VisionModel, EncoderProjectionModel, VisionProjectionModel]
         ] = None,
+        resampler_model: Optional[EncoderModel] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,
         device: Union[str, torch.device, None] = None,
@@ -380,6 +366,9 @@ class AdapterPipeline:
 
         self.pipeline = stable_diffusion_pipeline
         self.condition_model = condition_model
+        self.resampler_model = (
+            resampler_model if resampler_model is not None else nn.Identity()
+        )
         self.adapter_model = adapter_model
 
         self.processor = processor
@@ -411,17 +400,20 @@ class AdapterPipeline:
             self.processor is not None
         ), "Got condition inputs but the processor is None"
 
-        cond_tensors: torch.Tensor = self.process_inputs(cond_inputs)
+        cond_tensors: torch.Tensor = self.process_inputs(cond_inputs).to(self.device, self.dtype)
         assert (
             self.condition_model is not None
         ), "Got condition inputs but the condition model is None"
-        embeds = self.condition_model(cond_tensors.to(self.device, self.dtype))
+        cond_embeds = self.resampler_model(self.condition_model(cond_tensors))
 
         assert (
             self.adapter_model is not None
         ), "Got condition inputs but the adapter model is None"
-        cond_embeds = self.adapter_model(embeds)
-        uncond_embeds = self.adapter_model(torch.zeros_like(embeds))
+        cond_embeds = self.adapter_model(cond_embeds)
+
+        uncond_tensors = torch.zeros_like(cond_tensors)
+        uncond_embeds = self.resampler_model(self.condition_model(uncond_tensors))
+        uncond_embeds = self.adapter_model(uncond_embeds)
 
         return cond_embeds, uncond_embeds
 

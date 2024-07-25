@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Union
+from typing import Dict, Union, Type
 from typing_extensions import override
 
 import torch
@@ -21,7 +21,6 @@ from model.models import (
     EncoderProjectionModel,
     AdapterModel,
     PreTrainedModel,
-    VisionResamperModel,
     VisionProjectionModel,
     AdapterPipeline,
 )
@@ -219,26 +218,24 @@ class LitAdapterModel(LitBaseModel):
         self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
             self.diffusion_model_path, subfolder="text_encoder"
         )
-
-        self.condition_encoder: Union[
-            VisionResamperModel,
-            EncoderProjectionModel,
-            VisionProjectionModel,
-        ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
-            config.lightning.condition_encoder.pretrained_model_path
+        self.condition_encoder: Union[VisionProjectionModel, EncoderProjectionModel] = (
+            get_class(config.lightning.condition_encoder.name)(
+                config.lightning.condition_encoder
+            )
         )
-        self.condition_trainable = config.lightning.condition_encoder.get(
-            "trainable", False
-        )
+        if config.lightning.get("resampler_model", None) is not None:
+            self.resampler_model = EncoderModel(config.lightning.resampler_model)
+            self.resampler_model.requires_grad_(True)
+        else:
+            self.resampler_model = nn.Identity()
 
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
-        self.condition_encoder.requires_grad_(self.condition_trainable)
+        self.condition_encoder.requires_grad_(False)
 
         self.model.bind_unet(self.unet)
         self.model.train()
-        self.condition_encoder.train(mode=self.condition_trainable)
 
     @override
     def forward(self, batch) -> Dict:
@@ -268,17 +265,18 @@ class LitAdapterModel(LitBaseModel):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-        # get vision embeds
-        with torch.no_grad():
-            condition_embeds_without_drop = self.condition_encoder(condition_inputs)
-
-        condition_embeds_ = []
-        for condition_embed, drop in zip(condition_embeds_without_drop, drops):
-            condition_embeds_.append(
-                torch.where(drop, torch.zeros_like(condition_embed), condition_embed)
+        cond_inputs_ = []
+        for cond_input, drop in zip(condition_inputs, drops):
+            cond_inputs_.append(
+                torch.where(drop, torch.zeros_like(cond_input), cond_input)
             )
-        condition_embeds = torch.stack(condition_embeds_, dim=0)
-        condition_embeds = self.model(condition_embeds)
+        cond_inputs = torch.stack(cond_inputs_, dim=0)
+
+        # get condition embeds
+        with torch.no_grad():
+            cond_embeds = self.condition_encoder(cond_inputs)
+        cond_embeds = self.resampler_model(cond_embeds)
+        cond_embeds = self.model(cond_embeds)
 
         with torch.no_grad():
             prompt_embeds = self.text_encoder(input_ids)[0]
@@ -286,7 +284,7 @@ class LitAdapterModel(LitBaseModel):
         noise_pred: torch.Tensor = self.unet(
             noisy_latents,
             timesteps,
-            torch.cat([prompt_embeds, condition_embeds], dim=1),
+            torch.cat([prompt_embeds, cond_embeds], dim=1),
             return_dict=False,
         )[0]
 
@@ -329,14 +327,17 @@ class LitAdapterModel(LitBaseModel):
             dtype=self.dtype,
         )
 
-        condition_inputs, ground_truth = (
+        cond_inputs, ground_truth = (
             batch["condition_inputs"],
             batch["ground_truth"],
         )
         with torch.inference_mode():
-            embeds = self.condition_encoder(condition_inputs)
-            cond_embeds = self.model(embeds)
-            uncond_embeds = self.model(torch.zeros_like(embeds))
+            cond_embeds = self.resampler_model(self.condition_encoder(cond_inputs))
+            cond_embeds = self.model(cond_embeds)
+
+            uncond_inputs = torch.zeros_like(cond_inputs)
+            uncond_embeds = self.resampler_model(self.condition_encoder(uncond_inputs))
+            uncond_embeds = self.model(uncond_embeds)
 
         images: torch.Tensor = pipeline.generate(
             cond_embeds=cond_embeds,
@@ -370,47 +371,49 @@ class LitAdapterModel(LitBaseModel):
             dtype=self.dtype,
         )
 
-        condition_inputs, image_indexes = (
+        cond_inputs, image_indexes = (
             batch["condition_inputs"],
             batch["image_indexes"],
         )
         with torch.inference_mode():
-            embeds = self.condition_encoder(condition_inputs)
-            cond_embeds = self.model(embeds)
-            uncond_embeds = self.model(torch.zeros_like(embeds))
+            cond_embeds = self.resampler_model(self.condition_encoder(cond_inputs))
+            cond_embeds = self.model(cond_embeds)
+
+            uncond_inputs = torch.zeros_like(cond_inputs)
+            uncond_embeds = self.resampler_model(self.condition_encoder(uncond_inputs))
+            uncond_embeds = self.model(uncond_embeds)
 
         # parameters for generation process
         num_images_per_prompt = self.config.trainer.test.get(
             "num_images_per_prompt", None
         )
-        seed = self.config.trainer.test.get("seed", None)
-        guidance_scale = self.config.trainer.test.get("guidance_scale", None)
-        num_inference_steps = self.config.trainer.test.get("num_inference_steps", None)
 
         images: torch.Tensor = pipeline.generate(
             cond_embeds=cond_embeds,
             uncond_embeds=uncond_embeds,
             num_images_per_prompt=num_images_per_prompt,
-            seed=seed,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
+            seed=self.config.trainer.get("seed", None),
         )
 
         log_directory = self.logger.log_dir
         if log_directory is not None:
             save_directory = os.path.join(log_directory, "images")
             # save generated images
-            for i in range(len(condition_inputs)):
+            for i in range(len(cond_inputs)):
                 for j in range(num_images_per_prompt):
                     image: Image = images[i * num_images_per_prompt + j]
                     save_path = os.path.join(
-                        save_directory, f"{image_indexes[i]}_{j}.png"
+                        save_directory, f"{image_indexes[i]}-{j}.png"
                     )
                     image.save(save_path)
 
     @override
     def save_pretrained(self, save_directory: str):
-        super().save_pretrained(save_directory)
+        if isinstance(self.resampler_model, EncoderModel):
+            resampler_model_path = os.path.join(save_directory, "resampler-model")
+            self.resampler_model.save_pretrained(resampler_model_path)
 
-        if self.condition_trainable:
-            self.condition_encoder.save_pretrained(save_directory)
+            adapter_model_path = os.path.join(save_directory, "adapter-model")
+            self.model.save_pretrained(adapter_model_path)
+        else:
+            super().save_pretrained(save_directory)
