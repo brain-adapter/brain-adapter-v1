@@ -400,7 +400,9 @@ class AdapterPipeline:
             self.processor is not None
         ), "Got condition inputs but the processor is None"
 
-        cond_tensors: torch.Tensor = self.process_inputs(cond_inputs).to(self.device, self.dtype)
+        cond_tensors: torch.Tensor = self.process_inputs(cond_inputs).to(
+            self.device, self.dtype
+        )
         assert (
             self.condition_model is not None
         ), "Got condition inputs but the condition model is None"
@@ -437,7 +439,10 @@ class AdapterPipeline:
             self.condition_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
 
-        if cond_embeds is None and uncond_embeds is None:
+        if cond_embeds is not None and uncond_embeds is not None:
+            cond_embeds = cond_embeds.to(self.device, self.dtype)
+            uncond_embeds = uncond_embeds.to(self.device, self.dtype)
+        elif cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
         elif cond_embeds is not None and uncond_embeds is None:
             raise ValueError("Got [cond_embeds], but [uncond_embeds] is missing")

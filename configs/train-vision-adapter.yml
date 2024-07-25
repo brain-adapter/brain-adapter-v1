@@ -27,9 +27,22 @@ lightning:
   name: model.lightnings.LitAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
   snr_gamma: 5.0
+
   condition_encoder:
-    name: model.models.VisionResamperModel
+    name: model.models.VisionModel
     pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
+
+  resampler_model:
+    name: model.models.EncoderModel
+    encoder_name: model.modules.VisionPerceiver
+
+    input_dim: 1024
+    hidden_size: 768
+    num_attention_heads: 12
+    num_layers: 4
+    num_tokens: 257
+
+    projection_dim: 768
 
 model:
   input_size: 768

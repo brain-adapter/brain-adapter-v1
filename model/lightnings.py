@@ -219,8 +219,8 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="text_encoder"
         )
         self.condition_encoder: Union[VisionProjectionModel, EncoderProjectionModel] = (
-            get_class(config.lightning.condition_encoder.name)(
-                config.lightning.condition_encoder
+            get_class(config.lightning.condition_encoder.name).from_pretrained(
+                config.lightning.condition_encoder.pretrained_model_path
             )
         )
         if config.lightning.get("resampler_model", None) is not None:
