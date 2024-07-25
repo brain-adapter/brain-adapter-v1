@@ -40,7 +40,7 @@ class PreTrainedModel(nn.Module):
                 module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
             )
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
-        elif isinstance(module, EncoderModel):
+        elif isinstance(module, EncoderProjectionModel):
             nn.init.normal_(
                 module.projection.weight,
                 std=module.embed_dim**-0.5,
@@ -106,6 +106,26 @@ class PreTrainedModel(nn.Module):
 
 class EncoderModel(PreTrainedModel):
     """
+    Encoder model wrapper
+    """
+
+    def __init__(self, config: DictConfig):
+        super.__init__(config)
+
+        self.encoder = get_class(config.encoder_name)(config)
+
+        self.apply(self._init_weights)
+
+    def forward(self, inputs: torch.Tensor):
+        encoder_outputs = self.encoder(inputs, output_attentions=False)
+
+        embeds = encoder_outputs[0]
+
+        return embeds
+
+
+class EncoderProjectionModel(PreTrainedModel):
+    """
     Encoder model wrapper with linear projection
     """
 
@@ -136,56 +156,6 @@ class EncoderModel(PreTrainedModel):
         return attn_maps
 
 
-class BrainVisionModel(PreTrainedModel):
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-
-        self.vision_model = EncoderModel(config.vision_config)
-        self.eeg_model = EncoderModel(config.eeg_config)
-
-    def forward(self, eeg_values: torch.Tensor, vision_hidden_states: torch.Tensor):
-        eeg_embeds = self.eeg_model(eeg_values)
-
-        vision_embeds = self.vision_model(vision_hidden_states)
-
-        return eeg_embeds, vision_embeds
-
-    def save_pretrained(self, save_directory: str):
-        self.vision_model.save_pretrained(os.path.join(save_directory, "vision-model"))
-        self.eeg_model.save_pretrained(os.path.join(save_directory, "eeg-model"))
-
-        # save config
-        config_path = os.path.join(save_directory, "config.yml")
-        OmegaConf.save(self.config, config_path)
-
-    @classmethod
-    def from_pretrained(
-        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
-    ) -> PreTrainedModel:
-        if not isinstance(config, DictConfig):
-            conf_path = os.path.join(pretrained_model_path, "config.yml")
-            if not os.path.exists(conf_path):
-                raise FileNotFoundError(
-                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
-                )
-            config = OmegaConf.load(conf_path)
-        else:
-            # overwrite
-            config = copy.deepcopy(config)
-
-        vision_model_path = os.path.join(pretrained_model_path, "vision-model")
-        vision_model = EncoderModel.from_pretrained(vision_model_path)
-
-        eeg_model_path = os.path.join(pretrained_model_path, "eeg-model")
-        eeg_model = EncoderModel.from_pretrained(eeg_model_path)
-
-        model = cls(config)
-        model.vision_model.load_state_dict(vision_model.state_dict())
-        model.eeg_model.load_state_dict(eeg_model.state_dict())
-
-        return model
-
-
 class VisionResamperModel(PreTrainedModel):
     """
     Wrapper for CLIP-ViT Model
@@ -194,8 +164,9 @@ class VisionResamperModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self._clip_skip = config.get("clip_skip", 1)
+        # Make sure to set vision_model as non-trainable in lightning scripts
         self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
-        self.resampler_model = EncoderModel.from_pretrained(config.resampler_model_path)
+        self.resampler_model = EncoderModel(config.resampler_config)
 
     def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
         hidden_states = self.vision_model(
@@ -225,6 +196,10 @@ class VisionResamperModel(PreTrainedModel):
             config = copy.deepcopy(config)
 
         model = cls(config)
+        model_path = os.path.join(pretrained_model_path, "pytorch_model.bin")
+        model.resampler_model.load_state_dict(
+            torch.load(model_path, map_location="cpu")
+        )
         # Set model in evaluation mode to deactivate DropOut modules by default
         model.eval()
         return model
@@ -236,6 +211,11 @@ class VisionResamperModel(PreTrainedModel):
         config_path = os.path.join(save_directory, "config.yml")
         # save the model config file as yaml
         OmegaConf.save(self.config, config_path)
+
+        model_path = os.path.join(save_directory, "pytorch_model.bin")
+        # save resampler only
+        model = self.cpu().resampler_model
+        torch.save(model.state_dict(), model_path)
 
 
 class VisionProjectionModel(PreTrainedModel):
@@ -385,7 +365,7 @@ class AdapterPipeline:
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
         condition_model: Optional[
-            Union[VisionResamperModel, EncoderModel, VisionProjectionModel]
+            Union[VisionResamperModel, EncoderProjectionModel, VisionProjectionModel]
         ] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,

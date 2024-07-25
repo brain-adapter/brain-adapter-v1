@@ -1,5 +1,5 @@
 import torch
-from model.models import EncoderModel
+from model.models import EncoderProjectionModel
 import seaborn
 import matplotlib.pyplot as plt
 import os
@@ -23,7 +23,7 @@ gpu = (
 
 eeg = data["dataset"][index]["eeg"][:, 20:460].float().unsqueeze(dim=0).to(gpu)
 
-model:EncoderModel = EncoderModel.from_pretrained("pretrained/kd-cos")
+model:EncoderProjectionModel = EncoderProjectionModel.from_pretrained("pretrained/kd-cos")
 
 model.to(device=gpu)
 

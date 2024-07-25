@@ -13,16 +13,16 @@ from diffusers import (
     AutoencoderKL,
     DDPMScheduler,
     StableDiffusionPipeline,
-    PNDMScheduler,
 )
 from transformers import CLIPTextModel, CLIPVisionModelWithProjection, CLIPTokenizer
 
 from model.models import (
     EncoderModel,
-    BrainVisionModel,
+    EncoderProjectionModel,
     AdapterModel,
     PreTrainedModel,
     VisionResamperModel,
+    VisionProjectionModel,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -97,11 +97,21 @@ class LitBrainVisionModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = BrainVisionModel.from_pretrained(pretrained_model_path)
+            self.model = EncoderProjectionModel.from_pretrained(pretrained_model_path)
         else:
-            self.model = BrainVisionModel(config=config.model)
+            self.model = EncoderProjectionModel(config=config.model)
+
+        vision_config = config.lightning.get("vision_config", None)
+        if vision_config is not None:
+            self.vision_model: EncoderModel = get_class(
+                vision_config.name
+            ).from_pretrained(vision_config.pretrained_model_path)
+        else:
+            # no trainable adapter
+            self.vision_model = nn.Identity()
 
         self.model.train()
+        self.vision_model.requires_grad_(False)
 
     @override
     def forward(self, batch) -> Dict:
@@ -109,7 +119,9 @@ class LitBrainVisionModel(LitBaseModel):
             batch["eeg_values"],
             batch["clip_embeds"],
         )
-        eeg_embeds, vision_embeds = self.model(eeg_values, clip_embeds)
+        eeg_embeds = self.model(eeg_values)
+
+        vision_embeds = self.vision_model(clip_embeds)
 
         loss = 1 - nn.functional.cosine_similarity(
             eeg_embeds, vision_embeds, dim=-1
@@ -128,19 +140,15 @@ class LitEEGClsModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = EncoderModel.from_pretrained(pretrained_model_path)
+            self.model = EncoderProjectionModel.from_pretrained(pretrained_model_path)
         else:
-            self.model = EncoderModel(config=config.model)
+            self.model = EncoderProjectionModel(config=config.model)
         self.model.train()
 
     @override
     def forward(self, batch):
-        eeg_values, labels, subjects = (
-            batch["eeg_values"],
-            batch["label"],
-            batch["subject"],
-        )
-        logits: torch.Tensor = self.model(eeg_values, subjects)
+        eeg_values, labels = (batch["eeg_values"], batch["label"])
+        logits: torch.Tensor = self.model(eeg_values)
 
         pred = logits.argmax(dim=-1)
         acc = torch.sum(pred == labels).cpu().item() / len(labels)
@@ -180,6 +188,7 @@ class LitAdapterModel(LitBaseModel):
         super().__init__(config)
         self.diffusion_model_path = config.lightning.diffusion_model_path
         self.snr_gamma = config.lightning.get("snr_gamma", None)
+        self.condition_trainable: bool = config.get("trainable_condition", False)
 
         self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
             self.diffusion_model_path, subfolder="unet"
@@ -213,7 +222,10 @@ class LitAdapterModel(LitBaseModel):
         )
 
         self.condition_encoder: Union[
-            VisionResamperModel, EncoderModel, CLIPVisionModelWithProjection
+            VisionResamperModel,
+            EncoderProjectionModel,
+            VisionProjectionModel,
+            EncoderModel,
         ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
             config.lightning.condition_encoder.pretrained_model_path
         )
@@ -221,10 +233,11 @@ class LitAdapterModel(LitBaseModel):
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
         self.text_encoder.requires_grad_(False)
-        self.condition_encoder.requires_grad_(False)
+        self.condition_encoder.requires_grad_(self.condition_trainable)
 
         self.model.bind_unet(self.unet)
         self.model.train()
+        self.condition_encoder.train(mode=self.condition_trainable)
 
     @override
     def forward(self, batch) -> Dict:
@@ -393,3 +406,10 @@ class LitAdapterModel(LitBaseModel):
                         save_directory, f"{image_indexes[i]}_{j}.png"
                     )
                     image.save(save_path)
+
+    @override
+    def save_pretrained(self, save_directory: str):
+        super().save_pretrained(save_directory)
+
+        if self.condition_trainable:
+            self.condition_encoder.save_pretrained(save_directory)
