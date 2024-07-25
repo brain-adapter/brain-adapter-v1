@@ -14,7 +14,7 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
 )
-from transformers import CLIPTextModel, CLIPVisionModelWithProjection, CLIPTokenizer
+from transformers import CLIPTextModel
 
 from model.models import (
     EncoderModel,
@@ -188,7 +188,6 @@ class LitAdapterModel(LitBaseModel):
         super().__init__(config)
         self.diffusion_model_path = config.lightning.diffusion_model_path
         self.snr_gamma = config.lightning.get("snr_gamma", None)
-        self.condition_trainable: bool = config.get("trainable_condition", False)
 
         self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
             self.diffusion_model_path, subfolder="unet"
@@ -225,9 +224,11 @@ class LitAdapterModel(LitBaseModel):
             VisionResamperModel,
             EncoderProjectionModel,
             VisionProjectionModel,
-            EncoderModel,
         ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
             config.lightning.condition_encoder.pretrained_model_path
+        )
+        self.condition_trainable = config.lightning.condition_encoder.get(
+            "trainable", False
         )
 
         self.unet.requires_grad_(False)
