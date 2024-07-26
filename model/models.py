@@ -1,6 +1,8 @@
 import os
 import copy
 from typing import Optional, Tuple, Union, List, Dict
+from typing_extensions import override
+
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
@@ -40,7 +42,7 @@ class PreTrainedModel(nn.Module):
                 module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
             )
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
-        elif isinstance(module, EncoderProjectionModel):
+        elif isinstance(module, EncoderModelWithProjection):
             nn.init.normal_(
                 module.projection.weight,
                 std=module.embed_dim**-0.5,
@@ -124,7 +126,7 @@ class EncoderModel(PreTrainedModel):
         return embeds
 
 
-class EncoderProjectionModel(PreTrainedModel):
+class EncoderModelWithProjection(PreTrainedModel):
     """
     Encoder model wrapper with linear projection
     """
@@ -156,7 +158,7 @@ class EncoderProjectionModel(PreTrainedModel):
         return attn_maps
 
 
-class VisionProjectionModel(PreTrainedModel):
+class VisionModelWithProjection(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.vision_model = CLIPVisionModelWithProjection.from_pretrained(
@@ -253,17 +255,27 @@ class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.cross_attention_dim = config.get("cross_attention_dim", 768)
-        self.input_size = config.get("input_size", 768)
-        self.num_tokens = config.get("num_tokens", 4)
+        self.resampler = (
+            EncoderModel(config.resampler_config)
+            if config.get("resampler_config", None) is not None
+            else nn.Identity()
+        )
 
+        self.num_tokens: int = config.projection_config.get("num_tokens", 4)
+        self.cross_attention_dim: int = config.projection_config.get(
+            "cross_attention_dim", 768
+        )
+        self.input_size: int = config.projection_config.get("input_size", 768)
+        self.scale = config.projection_config.get("scale", 1.0)
         self.projection = AdapterProjection(
             self.input_size, self.cross_attention_dim, self.num_tokens
         )
 
         unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
         self.adapter_modules = nn.ModuleList(
-            self._process_unet(unet, num_tokens=self.num_tokens).values()
+            self._process_unet(
+                unet, num_tokens=self.num_tokens, scale=self.scale
+            ).values()
         )
 
         self.apply(self._init_weights)
@@ -272,6 +284,7 @@ class AdapterModel(PreTrainedModel):
         self,
         unet: UNet2DConditionModel,
         num_tokens: Optional[int] = None,
+        scale: Optional[float] = None,
     ) -> Dict:
         attn_procs = {}
         unet_sd = unet.state_dict()
@@ -301,16 +314,21 @@ class AdapterModel(PreTrainedModel):
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
+                    scale=scale,
                 )
                 attn_procs[name].load_state_dict(weights, strict=False)
 
         return attn_procs
 
-    def forward(self, eeg_embeds: torch.Tensor):
-        return self.projection(eeg_embeds)
+    def forward(self, cond_embeds: torch.Tensor):
+        resampled_embeds = self.resampler(cond_embeds)
+
+        return self.projection(resampled_embeds)
 
     def bind_unet(self, unet: UNet2DConditionModel):
-        unet.set_attn_processor(self._process_unet(unet, num_tokens=self.num_tokens))
+        unet.set_attn_processor(
+            self._process_unet(unet, num_tokens=self.num_tokens, scale=self.scale)
+        )
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
@@ -320,11 +338,18 @@ class AdapterModel(PreTrainedModel):
     ) -> PreTrainedModel:
         unet_config = OmegaConf.create(dict(**unet.config))
         OmegaConf.update(config, "unet_config", unet_config)
-        OmegaConf.update(config, "cross_attention_dim", unet.config.cross_attention_dim)
+
+        OmegaConf.update(
+            config.projection_config,
+            "cross_atttention_dim",
+            unet.config.cross_attention_dim,
+        )
 
         model = cls(config)
         adapter_modules = nn.ModuleList(
-            model._process_unet(unet, num_tokens=model.num_tokens).values()
+            model._process_unet(
+                unet, num_tokens=model.num_tokens, scale=model.scale
+            ).values()
         )
         model.adapter_modules.load_state_dict(adapter_modules.state_dict())
         return model
@@ -334,7 +359,6 @@ class AdapterModel(PreTrainedModel):
         cls, unet: UNet2DConditionModel, ip_adapter_model_path: str, config: DictConfig
     ) -> PreTrainedModel:
         model = cls.from_unet(unet, config)
-        model.adapter_modules
 
         state_dict = torch.load(ip_adapter_model_path, map_location="cpu")
 
@@ -344,15 +368,22 @@ class AdapterModel(PreTrainedModel):
 
         return model
 
+    @override
+    def save_pretrained(self, save_directory: str):
+        if isinstance(self.resampler, EncoderModel):
+            resampler_model_path = os.path.join(save_directory, "resampler")
+            self.resampler.save_pretrained(resampler_model_path)
+
+        super().save_pretrained(save_directory)
+
 
 class AdapterPipeline:
     def __init__(
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
         condition_model: Optional[
-            Union[VisionModel, EncoderProjectionModel, VisionProjectionModel]
+            Union[VisionModel, EncoderModelWithProjection, VisionModelWithProjection]
         ] = None,
-        resampler_model: Optional[EncoderModel] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,
         device: Union[str, torch.device, None] = None,
@@ -366,9 +397,6 @@ class AdapterPipeline:
 
         self.pipeline = stable_diffusion_pipeline
         self.condition_model = condition_model
-        self.resampler_model = (
-            resampler_model if resampler_model is not None else nn.Identity()
-        )
         self.adapter_model = adapter_model
 
         self.processor = processor
@@ -406,16 +434,14 @@ class AdapterPipeline:
         assert (
             self.condition_model is not None
         ), "Got condition inputs but the condition model is None"
-        cond_embeds = self.resampler_model(self.condition_model(cond_tensors))
+        embeds = self.condition_model(cond_tensors)
 
         assert (
             self.adapter_model is not None
         ), "Got condition inputs but the adapter model is None"
-        cond_embeds = self.adapter_model(cond_embeds)
+        cond_embeds = self.adapter_model(embeds)
 
-        uncond_tensors = torch.zeros_like(cond_tensors)
-        uncond_embeds = self.resampler_model(self.condition_model(uncond_tensors))
-        uncond_embeds = self.adapter_model(uncond_embeds)
+        uncond_embeds = self.adapter_model(torch.zeros_like(embeds))
 
         return cond_embeds, uncond_embeds
 

@@ -27,12 +27,20 @@ lightning:
   name: model.lightnings.LitAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
   snr_gamma: 5.0
+  num_images_per_prompt: 4
+  num_inference_steps: 30
 
   condition_encoder:
     name: model.models.VisionModel
     pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
 
-  resampler_model:
+model:
+  projection_config:
+    input_size: 768
+    num_tokens: 4
+    scale: 1.0
+  
+  resampler_config:
     name: model.models.EncoderModel
     encoder_name: model.modules.VisionPerceiver
 
@@ -43,11 +51,6 @@ lightning:
     num_tokens: 257
 
     projection_dim: 768
-
-model:
-  input_size: 768
-  num_tokens: 4
-  scale: 1.0
 
 dataset: 
   name: data.dataset.ImageTextDataset

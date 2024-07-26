@@ -18,10 +18,10 @@ from transformers import CLIPTextModel
 
 from model.models import (
     EncoderModel,
-    EncoderProjectionModel,
+    EncoderModelWithProjection,
     AdapterModel,
     PreTrainedModel,
-    VisionProjectionModel,
+    VisionModelWithProjection,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -96,9 +96,11 @@ class LitBrainVisionModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = EncoderProjectionModel.from_pretrained(pretrained_model_path)
+            self.model = EncoderModelWithProjection.from_pretrained(
+                pretrained_model_path
+            )
         else:
-            self.model = EncoderProjectionModel(config=config.model)
+            self.model = EncoderModelWithProjection(config=config.model)
 
         vision_config = config.lightning.get("vision_config", None)
         if vision_config is not None:
@@ -139,9 +141,11 @@ class LitEEGClsModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = EncoderProjectionModel.from_pretrained(pretrained_model_path)
+            self.model = EncoderModelWithProjection.from_pretrained(
+                pretrained_model_path
+            )
         else:
-            self.model = EncoderProjectionModel(config=config.model)
+            self.model = EncoderModelWithProjection(config=config.model)
         self.model.train()
 
     @override
@@ -218,16 +222,11 @@ class LitAdapterModel(LitBaseModel):
         self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
             self.diffusion_model_path, subfolder="text_encoder"
         )
-        self.condition_encoder: Union[VisionProjectionModel, EncoderProjectionModel] = (
-            get_class(config.lightning.condition_encoder.name).from_pretrained(
-                config.lightning.condition_encoder.pretrained_model_path
-            )
+        self.condition_encoder: Union[
+            VisionModelWithProjection, EncoderModelWithProjection
+        ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
+            config.lightning.condition_encoder.pretrained_model_path
         )
-        if config.lightning.get("resampler_model", None) is not None:
-            self.resampler_model = EncoderModel(config.lightning.resampler_model)
-            self.resampler_model.requires_grad_(True)
-        else:
-            self.resampler_model = nn.Identity()
 
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
@@ -265,17 +264,17 @@ class LitAdapterModel(LitBaseModel):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-        cond_inputs_ = []
-        for cond_input, drop in zip(condition_inputs, drops):
-            cond_inputs_.append(
-                torch.where(drop, torch.zeros_like(cond_input), cond_input)
-            )
-        cond_inputs = torch.stack(cond_inputs_, dim=0)
-
         # get condition embeds
         with torch.no_grad():
-            cond_embeds = self.condition_encoder(cond_inputs)
-        cond_embeds = self.resampler_model(cond_embeds)
+            cond_embeds = self.condition_encoder(condition_inputs)
+
+        cond_embeds_ = []
+        for cond_embed, drop in zip(cond_embeds, drops):
+            cond_embeds_.append(
+                torch.where(drop, torch.zeros_like(cond_embed), cond_embed)
+            )
+
+        cond_embeds = torch.stack(cond_embeds_, dim=0)
         cond_embeds = self.model(cond_embeds)
 
         with torch.no_grad():
@@ -332,17 +331,19 @@ class LitAdapterModel(LitBaseModel):
             batch["ground_truth"],
         )
         with torch.inference_mode():
-            cond_embeds = self.resampler_model(self.condition_encoder(cond_inputs))
-            cond_embeds = self.model(cond_embeds)
+            embeds = self.condition_encoder(cond_inputs)
 
-            uncond_inputs = torch.zeros_like(cond_inputs)
-            uncond_embeds = self.resampler_model(self.condition_encoder(uncond_inputs))
-            uncond_embeds = self.model(uncond_embeds)
+            cond_embeds = self.model(embeds)
+            uncond_embeds = self.model(torch.zeros_like(embeds))
+        
+        seed = self.config.trainer.get("seed", None)
+        num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
         images: torch.Tensor = pipeline.generate(
             cond_embeds=cond_embeds,
             uncond_embeds=uncond_embeds,
-            seed=self.config.trainer.get("seed", 2024),
+            seed=seed,
+            num_inference_steps=num_inference_steps,
             output_type="pt",
         )
         images = images.cpu()
@@ -376,23 +377,24 @@ class LitAdapterModel(LitBaseModel):
             batch["image_indexes"],
         )
         with torch.inference_mode():
-            cond_embeds = self.resampler_model(self.condition_encoder(cond_inputs))
-            cond_embeds = self.model(cond_embeds)
-
-            uncond_inputs = torch.zeros_like(cond_inputs)
-            uncond_embeds = self.resampler_model(self.condition_encoder(uncond_inputs))
-            uncond_embeds = self.model(uncond_embeds)
+            embeds = self.condition_encoder(cond_inputs)
+            
+            cond_embeds = self.model(embeds)
+            uncond_embeds = self.model(torch.zeros_like(embeds))
 
         # parameters for generation process
-        num_images_per_prompt = self.config.trainer.test.get(
+        num_images_per_prompt = self.config.lightning.get(
             "num_images_per_prompt", None
         )
+        seed = self.config.trainer.get("seed", None)
+        num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
         images: torch.Tensor = pipeline.generate(
             cond_embeds=cond_embeds,
             uncond_embeds=uncond_embeds,
             num_images_per_prompt=num_images_per_prompt,
-            seed=self.config.trainer.get("seed", None),
+            num_inference_steps=num_inference_steps,
+            seed=seed,
         )
 
         log_directory = self.logger.log_dir
@@ -406,14 +408,3 @@ class LitAdapterModel(LitBaseModel):
                         save_directory, f"{image_indexes[i]}-{j}.png"
                     )
                     image.save(save_path)
-
-    @override
-    def save_pretrained(self, save_directory: str):
-        if isinstance(self.resampler_model, EncoderModel):
-            resampler_model_path = os.path.join(save_directory, "resampler-model")
-            self.resampler_model.save_pretrained(resampler_model_path)
-
-            adapter_model_path = os.path.join(save_directory, "adapter-model")
-            self.model.save_pretrained(adapter_model_path)
-        else:
-            super().save_pretrained(save_directory)
