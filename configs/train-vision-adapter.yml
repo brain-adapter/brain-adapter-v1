@@ -33,14 +33,8 @@ lightning:
   condition_encoder:
     name: model.models.VisionModel
     pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
-
-model:
-  projection_config:
-    input_size: 768
-    num_tokens: 4
-    scale: 1.0
   
-  resampler_config:
+  resampler:
     name: model.models.EncoderModel
     encoder_name: model.modules.VisionPerceiver
 
@@ -51,6 +45,13 @@ model:
     num_tokens: 257
 
     projection_dim: 768
+
+model:
+  projection_config:
+    input_size: 768
+    num_tokens: 4
+    scale: 1.0
+
 
 dataset: 
   name: data.dataset.ImageTextDataset

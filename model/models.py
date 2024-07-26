@@ -255,12 +255,6 @@ class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.resampler = (
-            EncoderModel(config.resampler_config)
-            if config.get("resampler_config", None) is not None
-            else nn.Identity()
-        )
-
         self.num_tokens: int = config.projection_config.get("num_tokens", 4)
         self.cross_attention_dim: int = config.projection_config.get(
             "cross_attention_dim", 768
@@ -285,9 +279,11 @@ class AdapterModel(PreTrainedModel):
         unet: UNet2DConditionModel,
         num_tokens: Optional[int] = None,
         scale: Optional[float] = None,
+        load_weights: Optional[bool] = None,
     ) -> Dict:
+        load_weights = load_weights if load_weights is not None else False
+
         attn_procs = {}
-        unet_sd = unet.state_dict()
         for name in unet.attn_processors.keys():
             cross_attention_dim = (
                 None
@@ -305,25 +301,24 @@ class AdapterModel(PreTrainedModel):
             if cross_attention_dim is None:
                 attn_procs[name] = AttnProcessor()
             else:
-                layer_name = name.split(".processor")[0]
-                weights = {
-                    "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"],
-                    "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"],
-                }
                 attn_procs[name] = VisionAttnProcessor(
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     num_tokens=num_tokens,
                     scale=scale,
                 )
-                attn_procs[name].load_state_dict(weights, strict=False)
-
+                if load_weights:
+                    unet_sd = unet.state_dict()
+                    layer_name = name.split(".processor")[0]
+                    weights = {
+                        "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"],
+                        "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"],
+                    }
+                    attn_procs[name].load_state_dict(weights)
         return attn_procs
 
     def forward(self, cond_embeds: torch.Tensor):
-        resampled_embeds = self.resampler(cond_embeds)
-
-        return self.projection(resampled_embeds)
+        return self.projection(cond_embeds)
 
     def bind_unet(self, unet: UNet2DConditionModel):
         unet.set_attn_processor(
@@ -334,7 +329,10 @@ class AdapterModel(PreTrainedModel):
 
     @classmethod
     def from_unet(
-        cls, unet: UNet2DConditionModel, config: DictConfig
+        cls,
+        unet: UNet2DConditionModel,
+        config: DictConfig,
+        bind_unet: Optional[bool] = None,
     ) -> PreTrainedModel:
         unet_config = OmegaConf.create(dict(**unet.config))
         OmegaConf.update(config, "unet_config", unet_config)
@@ -346,12 +344,19 @@ class AdapterModel(PreTrainedModel):
         )
 
         model = cls(config)
-        adapter_modules = nn.ModuleList(
-            model._process_unet(
-                unet, num_tokens=model.num_tokens, scale=model.scale
-            ).values()
+
+        attn_processor_dict = model._process_unet(
+            unet, model.num_tokens, model.scale, load_weights=True
         )
-        model.adapter_modules.load_state_dict(adapter_modules.state_dict())
+
+        adapter_modules = nn.ModuleList(attn_processor_dict.values())
+
+        model.adapter_modules = adapter_modules
+
+        bind_unet = bind_unet if bind_unet is not None else True
+        if bind_unet:
+            unet.set_attn_processor(attn_processor_dict)
+
         return model
 
     @classmethod
@@ -364,17 +369,9 @@ class AdapterModel(PreTrainedModel):
 
         # Load state dict for image_proj_model and adapter_modules
         model.projection.load_state_dict(state_dict["image_proj"], strict=True)
-        model.adapter_modules.load_state_dict(state_dict["ip_adapter"], strict=False)
+        model.adapter_modules.load_state_dict(state_dict["ip_adapter"], strict=True)
 
         return model
-
-    @override
-    def save_pretrained(self, save_directory: str):
-        if isinstance(self.resampler, EncoderModel):
-            resampler_model_path = os.path.join(save_directory, "resampler")
-            self.resampler.save_pretrained(resampler_model_path)
-
-        super().save_pretrained(save_directory)
 
 
 class AdapterPipeline:
@@ -384,6 +381,7 @@ class AdapterPipeline:
         condition_model: Optional[
             Union[VisionModel, EncoderModelWithProjection, VisionModelWithProjection]
         ] = None,
+        resampler: Optional[EncoderModel] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,
         device: Union[str, torch.device, None] = None,
@@ -397,6 +395,7 @@ class AdapterPipeline:
 
         self.pipeline = stable_diffusion_pipeline
         self.condition_model = condition_model
+        self.resampler = resampler if resampler is not None else nn.Identity()
         self.adapter_model = adapter_model
 
         self.processor = processor
@@ -435,6 +434,7 @@ class AdapterPipeline:
             self.condition_model is not None
         ), "Got condition inputs but the condition model is None"
         embeds = self.condition_model(cond_tensors)
+        embeds = self.resampler(embeds)
 
         assert (
             self.adapter_model is not None

@@ -196,23 +196,6 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="unet"
         )
 
-        # load adapter model
-        unet_config = OmegaConf.create(dict(**self.unet.config))
-        # load from pretrained model
-        if config.lightning.get("pretrained_model_path", None) is not None:
-            self.model: AdapterModel = AdapterModel.from_pretrained(
-                config.lightning.pretrained_model_path
-            )
-        # load from ip_adapter
-        elif config.lightning.get("ip_adapter_model_path", None) is not None:
-            OmegaConf.update(config.model, "unet_config", unet_config)
-            self.model: AdapterModel = AdapterModel.from_ip_adapter(
-                self.unet, config.lightning.ip_adapter_model_path, config.model
-            )
-        # load from unet
-        else:
-            self.model: AdapterModel = AdapterModel.from_unet(self.unet, config.model)
-
         self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
             self.diffusion_model_path, subfolder="vae"
         )
@@ -233,8 +216,32 @@ class LitAdapterModel(LitBaseModel):
         self.text_encoder.requires_grad_(False)
         self.condition_encoder.requires_grad_(False)
 
-        self.model.bind_unet(self.unet)
+        # load adapter model
+        unet_config = OmegaConf.create(dict(**self.unet.config))
+        # load from pretrained model
+        if config.lightning.get("pretrained_model_path", None) is not None:
+            self.model: AdapterModel = AdapterModel.from_pretrained(
+                config.lightning.pretrained_model_path
+            )
+        # load from ip_adapter
+        elif config.lightning.get("ip_adapter_model_path", None) is not None:
+            OmegaConf.update(config.model, "unet_config", unet_config)
+            self.model: AdapterModel = AdapterModel.from_ip_adapter(
+                self.unet, config.lightning.ip_adapter_model_path, config.model
+            )
+        # load from unet
+        else:
+            self.model: AdapterModel = AdapterModel.from_unet(self.unet, config.model)
+
         self.model.train()
+
+        resampler_config = config.lightning.get("resampler", None)
+        self.resampler = (
+            EncoderModel(resampler_config)
+            if resampler_config is not None
+            else nn.Identity()
+        )
+        self.resampler.train()
 
     @override
     def forward(self, batch) -> Dict:
@@ -267,6 +274,8 @@ class LitAdapterModel(LitBaseModel):
         # get condition embeds
         with torch.no_grad():
             cond_embeds = self.condition_encoder(condition_inputs)
+
+        cond_embeds = self.resampler(cond_embeds)
 
         cond_embeds_ = []
         for cond_embed, drop in zip(cond_embeds, drops):
@@ -332,10 +341,11 @@ class LitAdapterModel(LitBaseModel):
         )
         with torch.inference_mode():
             embeds = self.condition_encoder(cond_inputs)
+            embeds = self.resampler(embeds)
 
             cond_embeds = self.model(embeds)
             uncond_embeds = self.model(torch.zeros_like(embeds))
-        
+
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
@@ -378,14 +388,13 @@ class LitAdapterModel(LitBaseModel):
         )
         with torch.inference_mode():
             embeds = self.condition_encoder(cond_inputs)
-            
+            embeds = self.resampler(embeds)
+
             cond_embeds = self.model(embeds)
             uncond_embeds = self.model(torch.zeros_like(embeds))
 
         # parameters for generation process
-        num_images_per_prompt = self.config.lightning.get(
-            "num_images_per_prompt", None
-        )
+        num_images_per_prompt = self.config.lightning.get("num_images_per_prompt", None)
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
