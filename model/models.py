@@ -461,9 +461,10 @@ class AdapterPipeline:
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        if self.condition_model is not None and self.adapter_model is not None:
+        if self.condition_model is not None and self.adapter_model is not None and self.resampler is not None:
             self.condition_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
+            self.resampler.to(self.device, self.dtype)
 
         if cond_embeds is not None and uncond_embeds is not None:
             cond_embeds = cond_embeds.to(self.device, self.dtype)

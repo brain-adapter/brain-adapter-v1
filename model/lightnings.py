@@ -1,10 +1,11 @@
 import os
-from typing import Dict, Union, Type
+from typing import Dict, Union
 from typing_extensions import override
 
 import torch
 import torchvision
 import lightning
+from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
@@ -56,6 +57,7 @@ class LitBaseModel(lightning.LightningModule):
 
         return model_outputs
 
+    @rank_zero_only
     def validation_step(self, batch, batch_idx) -> Dict:
         model_outputs = self(batch)
         loss = model_outputs["loss"]
@@ -64,6 +66,7 @@ class LitBaseModel(lightning.LightningModule):
 
         return model_outputs
 
+    @rank_zero_only
     def test_step(self, batch, batch_idx) -> Dict:
         model_outputs = self(batch)
         loss = model_outputs["loss"]
@@ -170,6 +173,7 @@ class LitEEGClsModel(LitBaseModel):
         return model_outputs
 
     @override
+    @rank_zero_only
     def validation_step(self, batch, batch_idx) -> Dict:
         model_outputs = super().validation_step(batch, batch_idx)
 
@@ -178,6 +182,7 @@ class LitEEGClsModel(LitBaseModel):
         return model_outputs
 
     @override
+    @rank_zero_only
     def test_step(self, batch, batch_idx) -> Dict:
         model_outputs = super().test_step(batch, batch_idx)
 
@@ -322,6 +327,7 @@ class LitAdapterModel(LitBaseModel):
         return {"loss": loss}
 
     @override
+    @rank_zero_only
     def validation_step(self, batch, batch_idx) -> torch.Tensor:
         pipeline = AdapterPipeline(
             StableDiffusionPipeline.from_pretrained(
@@ -369,6 +375,7 @@ class LitAdapterModel(LitBaseModel):
         )
 
     @override
+    @rank_zero_only
     def test_step(self, batch, batch_idx):
         pipeline = AdapterPipeline(
             StableDiffusionPipeline.from_pretrained(
@@ -417,3 +424,13 @@ class LitAdapterModel(LitBaseModel):
                         save_directory, f"{image_indexes[i]}-{j}.png"
                     )
                     image.save(save_path)
+    
+    @override
+    @rank_zero_only
+    def save_pretrained(self, save_directory: str):
+        adapter_path = os.path.join(save_directory, "adapter")
+        self.model.save_pretrained(adapter_path)
+
+        if isinstance(self.resampler, EncoderModel):
+            resampler_path = os.path.join(save_directory, "resampler")
+            self.resampler.save_pretrained(resampler_path)
