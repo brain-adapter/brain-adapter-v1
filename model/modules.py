@@ -345,7 +345,6 @@ class CrossAttentionBlock(nn.Module):
             ]
         )
 
-        self.layernorm = nn.LayerNorm(hidden_size)
 
     def forward(
         self,
@@ -366,9 +365,8 @@ class CrossAttentionBlock(nn.Module):
             if output_attentions:
                 all_attentions = all_attentions + (layer_outputs[1],)
         
-        pooled_output = self.layernorm(hidden_states)
 
-        return tuple(v for v in [pooled_output, all_attentions] if v is not None)
+        return tuple(v for v in [hidden_states, all_attentions] if v is not None)
 
 
 class EEGTransformer(nn.Module):
