@@ -255,32 +255,22 @@ class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.num_tokens: int = config.projection_config.get("num_tokens", 4)
-        self.cross_attention_dim: int = config.projection_config.get(
-            "cross_attention_dim", 768
-        )
-        self.input_size: int = config.projection_config.get("input_size", 768)
-        self.scale = config.projection_config.get("scale", 1.0)
-        self.projection = AdapterProjection(
-            self.input_size, self.cross_attention_dim, self.num_tokens
-        )
+        self.projection = AdapterProjection(config.projection_config)
 
+        # Init using `from_unet` only
         unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
-        self.adapter_modules = nn.ModuleList(
-            self._process_unet(
-                unet, num_tokens=self.num_tokens, scale=self.scale
-            ).values()
-        )
+        self.adapter_modules = nn.ModuleList(self._process_unet(unet).values())
 
         self.apply(self._init_weights)
 
+    @staticmethod
     def _process_unet(
-        self,
         unet: UNet2DConditionModel,
-        num_tokens: Optional[int] = None,
-        scale: Optional[float] = None,
         load_weights: Optional[bool] = None,
     ) -> Dict:
+        """
+        Get attention processor dict of the given unet and replace processors
+        """
         load_weights = load_weights if load_weights is not None else False
 
         attn_procs = {}
@@ -304,8 +294,6 @@ class AdapterModel(PreTrainedModel):
                 attn_procs[name] = VisionAttnProcessor(
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
-                    num_tokens=num_tokens,
-                    scale=scale,
                 )
                 if load_weights:
                     unet_sd = unet.state_dict()
@@ -321,9 +309,7 @@ class AdapterModel(PreTrainedModel):
         return self.projection(cond_embeds)
 
     def bind_unet(self, unet: UNet2DConditionModel):
-        unet.set_attn_processor(
-            self._process_unet(unet, num_tokens=self.num_tokens, scale=self.scale)
-        )
+        unet.set_attn_processor(self._process_unet(unet))
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
@@ -345,9 +331,7 @@ class AdapterModel(PreTrainedModel):
 
         model = cls(config)
 
-        attn_processor_dict = model._process_unet(
-            unet, model.num_tokens, model.scale, load_weights=True
-        )
+        attn_processor_dict = model._process_unet(unet, load_weights=True)
 
         adapter_modules = nn.ModuleList(attn_processor_dict.values())
 
@@ -356,20 +340,6 @@ class AdapterModel(PreTrainedModel):
         bind_unet = bind_unet if bind_unet is not None else True
         if bind_unet:
             unet.set_attn_processor(attn_processor_dict)
-
-        return model
-
-    @classmethod
-    def from_ip_adapter(
-        cls, unet: UNet2DConditionModel, ip_adapter_model_path: str, config: DictConfig
-    ) -> PreTrainedModel:
-        model = cls.from_unet(unet, config)
-
-        state_dict = torch.load(ip_adapter_model_path, map_location="cpu")
-
-        # Load state dict for image_proj_model and adapter_modules
-        model.projection.load_state_dict(state_dict["image_proj"], strict=True)
-        model.adapter_modules.load_state_dict(state_dict["ip_adapter"], strict=True)
 
         return model
 
@@ -402,11 +372,6 @@ class AdapterPipeline:
 
         if self.adapter_model is not None:
             self.adapter_model.bind_unet(self.pipeline.unet)
-
-    def set_scale(self, scale: float):
-        for attn_processor in self.pipeline.unet.attn_processors.values():
-            if isinstance(attn_processor, VisionAttnProcessor):
-                attn_processor.scale = scale
 
     def process_inputs(
         self, cond_inputs: Union[torch.Tensor, Image.Image, List[Image.Image]]
@@ -453,15 +418,17 @@ class AdapterPipeline:
         cond_embeds: Optional[torch.Tensor] = None,
         uncond_embeds: Optional[torch.Tensor] = None,
         num_images_per_prompt: Optional[int] = None,
-        prompts: Optional[Union[List[str], str]] = None,
-        negative_prompts: Optional[Union[List, str]] = None,
         seed: Optional[int] = None,
         guidance_scale: Optional[float] = None,
         num_inference_steps: Optional[int] = None,
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        if self.condition_model is not None and self.adapter_model is not None and self.resampler is not None:
+        if (
+            self.condition_model is not None
+            and self.adapter_model is not None
+            and self.resampler is not None
+        ):
             self.condition_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
             self.resampler.to(self.device, self.dtype)
@@ -476,20 +443,9 @@ class AdapterPipeline:
         elif cond_embeds is None and uncond_embeds is not None:
             raise ValueError("Got [uncond_embeds], but [cond_embeds] is missing")
 
-        num_prompts = cond_embeds.shape[0]
         num_images_per_prompt = (
             num_images_per_prompt if num_images_per_prompt is not None else 1
         )
-
-        if prompts is None:
-            prompts = ""
-        if negative_prompts is None:
-            negative_prompts = ""
-
-        if not isinstance(prompts, List):
-            prompts = [prompts] * num_prompts
-        if not isinstance(negative_prompts, List):
-            negative_prompts = [negative_prompts] * num_prompts
 
         bs_embed, seq_len, _ = cond_embeds.shape
         cond_embeds = cond_embeds.repeat(1, num_images_per_prompt, 1)
@@ -500,19 +456,6 @@ class AdapterPipeline:
             bs_embed * num_images_per_prompt, seq_len, -1
         )
 
-        with torch.inference_mode():
-            prompt_embeds_, negative_prompt_embeds_ = self.pipeline.encode_prompt(
-                prompts,
-                device=self.device,
-                num_images_per_prompt=num_images_per_prompt,
-                do_classifier_free_guidance=True,
-                negative_prompt=negative_prompts,
-            )
-            prompt_embeds = torch.cat([prompt_embeds_, cond_embeds], dim=1)
-            negative_prompt_embeds = torch.cat(
-                [negative_prompt_embeds_, uncond_embeds], dim=1
-            )
-
         generator = get_generator(seed, device=self.device)
 
         guidance_scale = guidance_scale if guidance_scale is not None else 7.5
@@ -521,8 +464,8 @@ class AdapterPipeline:
         )
 
         images = self.pipeline(
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
+            prompt_embeds=cond_embeds,
+            negative_prompt_embeds=uncond_embeds,
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
             generator=generator,

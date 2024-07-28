@@ -41,6 +41,7 @@ class LitBaseModel(lightning.LightningModule):
             "Cannot access this method here! Overwrite it instead."
         )
 
+    @rank_zero_only
     def save_pretrained(self, save_directory: str):
         """
         Save the pure model states along with its config file
@@ -207,9 +208,6 @@ class LitAdapterModel(LitBaseModel):
         self.noise_scheduler = DDPMScheduler.from_pretrained(
             self.diffusion_model_path, subfolder="scheduler"
         )
-        self.text_encoder: CLIPTextModel = CLIPTextModel.from_pretrained(
-            self.diffusion_model_path, subfolder="text_encoder"
-        )
         self.condition_encoder: Union[
             VisionModelWithProjection, EncoderModelWithProjection
         ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
@@ -218,7 +216,6 @@ class LitAdapterModel(LitBaseModel):
 
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
         self.condition_encoder.requires_grad_(False)
 
         # load adapter model
@@ -291,13 +288,10 @@ class LitAdapterModel(LitBaseModel):
         cond_embeds = torch.stack(cond_embeds_, dim=0)
         cond_embeds = self.model(cond_embeds)
 
-        with torch.no_grad():
-            prompt_embeds = self.text_encoder(input_ids)[0]
-
         noise_pred: torch.Tensor = self.unet(
             noisy_latents,
             timesteps,
-            torch.cat([prompt_embeds, cond_embeds], dim=1),
+            cond_embeds,
             return_dict=False,
         )[0]
 
@@ -334,7 +328,6 @@ class LitAdapterModel(LitBaseModel):
                 self.diffusion_model_path,
                 unet=self.unet,
                 vae=self.vae,
-                text_encoder=self.text_encoder,
                 safety_checker=None,
             ),
             device=self.device,
@@ -382,7 +375,6 @@ class LitAdapterModel(LitBaseModel):
                 self.diffusion_model_path,
                 unet=self.unet,
                 vae=self.vae,
-                text_encoder=self.text_encoder,
                 safety_checker=None,
             ),
             device=self.device,
@@ -424,7 +416,7 @@ class LitAdapterModel(LitBaseModel):
                         save_directory, f"{image_indexes[i]}-{j}.png"
                     )
                     image.save(save_path)
-    
+
     @override
     @rank_zero_only
     def save_pretrained(self, save_directory: str):

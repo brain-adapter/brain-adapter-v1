@@ -98,7 +98,7 @@ def main(config: DictConfig):
         trainer.test(model, datamodule=datamodule)
 
     # save model
-    if ckpt_callback is not None and task != Task.TEST_ONLY:
+    if ckpt_callback is not None and task != Task.TEST_ONLY and trainer.strategy.is_global_zero:
         ckpt_paths = ckpt_callback.best_k_models.keys()
         save_directory = config.trainer.get("save_directory", None)
 
