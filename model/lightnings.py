@@ -217,18 +217,10 @@ class LitAdapterModel(LitBaseModel):
         self.vae.requires_grad_(False)
         self.condition_encoder.requires_grad_(False)
 
-        # load adapter model
-        unet_config = OmegaConf.create(dict(**self.unet.config))
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
             self.model: AdapterModel = AdapterModel.from_pretrained(
                 config.lightning.pretrained_model_path
-            )
-        # load from ip_adapter
-        elif config.lightning.get("ip_adapter_model_path", None) is not None:
-            OmegaConf.update(config.model, "unet_config", unet_config)
-            self.model: AdapterModel = AdapterModel.from_ip_adapter(
-                self.unet, config.lightning.ip_adapter_model_path, config.model
             )
         # load from unet
         else:
@@ -246,10 +238,9 @@ class LitAdapterModel(LitBaseModel):
 
     @override
     def forward(self, batch) -> Dict:
-        pixel_values, condition_inputs, input_ids, drops = (
+        pixel_values, condition_inputs, drops = (
             batch["pixel_values"],
             batch["condition_inputs"],
-            batch["input_ids"],
             batch["drops"],
         )
         with torch.no_grad():
@@ -404,9 +395,11 @@ class LitAdapterModel(LitBaseModel):
             seed=seed,
         )
 
-        log_directory = self.logger.log_dir
-        if log_directory is not None:
-            save_directory = os.path.join(log_directory, "images")
+        save_dir = self.logger.save_dir
+        if save_dir is not None:
+            save_directory = os.path.join(save_dir, "images")
+            if not os.path.exists(save_directory):
+                os.makedirs(save_directory)
             # save generated images
             for i in range(len(cond_inputs)):
                 for j in range(num_images_per_prompt):

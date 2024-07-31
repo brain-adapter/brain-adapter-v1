@@ -51,6 +51,8 @@ class EEGImageNetDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig):
         super().__init__()
         self.config = config
+        self.mode = mode
+
         loaded = torch.load(config.eeg_data_path)
         dataset = loaded["dataset"]
         self.images = loaded["images"]
@@ -130,9 +132,6 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
                 transforms.Normalize([0.5], [0.5]),
             ]
         )
-        self.text_processor = CLIPTokenizer.from_pretrained(
-            config.diffusion_model_path, subfolder="tokenizer"
-        )
 
         self.image_root_path = config.image_root_path
         self.resolution = config.get("resolution", 512)
@@ -144,9 +143,6 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
             self.splitter = random.sample(
                 self.splitter, config.get("num_validation_images", 4)
             )
-            self.dataset = [
-                self.dataset[i] for i in range(len(self.dataset)) if i in self.splitter
-            ]
 
     def __getitem__(self, index) -> Dict:
         idx = self.splitter[index]
@@ -163,32 +159,20 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         pixel_values = self.image_processor(raw_image)
         ground_truth = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
-            if self.mode == "val"
+            if self.mode == "val" or self.mode == "test"
             else None
         )
 
         drop = torch.rand(1) < self.eeg_drop_prob
 
-        # no text will be used
-        text = ""
-        input_ids: torch.Tensor = self.text_processor(
-            text,
-            max_length=self.text_processor.model_max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        ).input_ids
-
         data = {
             "pixel_values": pixel_values,
             "condition_inputs": self.eeg_processor(item["eeg"], return_batches=False),
-            "input_ids": input_ids.squeeze(dim=0),
             "drops": drop,
         }
 
-        if self.mode == "val":
-            data["ground_truth"] = ground_truth
-        elif self.mode == "test":
+        if self.mode == "val" or self.mode == "test":
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
             data["image_indexes"] = self.images[item["image"]]
 
         return data
@@ -241,7 +225,7 @@ class ImageTextDataset(Dataset):
         diffusion_pixel_values = self.diffusion_processor(raw_image)
         ground_truth: Union[torch.Tensor, None] = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
-            if self.mode == "val"
+            if self.mode == "val" or self.mode == "test"
             else None
         )
 
@@ -267,9 +251,8 @@ class ImageTextDataset(Dataset):
             "drops": drop,
         }
 
-        if self.mode == "val":
+        if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)
-        elif self.mode == "test":
             data["image_indexes"] = index
 
         return data

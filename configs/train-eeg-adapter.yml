@@ -1,7 +1,7 @@
 trainer:
-  task: train_and_test
+  task: train_and_test_with_last
   seed: 2024
-  save_directory: /root/autodl-tmp/pretrained
+  # save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
   max_epochs: 4
   num_devices: 1
@@ -10,29 +10,30 @@ trainer:
     dirpath: /root/autodl-tmp/ckpts
     monitor: step
     filename: lit-{step}
-    save_top_k: 2
+    save_top_k: 1
     mode: max
-    every_n_train_steps: 2000
-    save_last: true
+    every_n_epochs: 1
+    save_last: false
 
 # for Tensorboard logger
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: vision-adapter
-    version: 0
+    name: eeg-adapter
+    version: 5-95
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitAdapterModel
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-step=54999/adapter
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
   snr_gamma: 5.0
   num_images_per_prompt: 4
-  num_inference_steps: 30
+  num_inference_steps: 50
 
   condition_encoder:
-    name: model.models.VisionModelWithProjection
-    pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
+    name: model.models.EncoderModelWithProjection
+    pretrained_model_path: /root/autodl-tmp/pretrained/brain-vision-model
 
 model:
   projection_config:
@@ -41,20 +42,19 @@ model:
 
 
 dataset: 
-  name: data.dataset.ImageTextDataset
+  name: data.dataset.EEGImageNetDatasetForGeneration
   num_workers: 4 # num_devices * 4
   resolution: 512
-  batch_size: 8
+  batch_size: 4
+  image_ext: JPEG
+  subject: 4
 
-  meta_files:
-    train: /root/autodl-tmp/data/ada10m-en/train/meta-train.parquet
-    val: /root/autodl-tmp/data/ada10m-en/validation/meta-val.parquet
-
-  image_root_path: 
-    train: /root/autodl-tmp/data/ada10m-en/train/images
-    val: /root/autodl-tmp/data/ada10m-en/validation/images
-  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
+  eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
+  image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   diffusion_model_path: *diffusion_model_path
+
+  merge_train_and_val: true
 
 # constant learning rate
 optimizer:
