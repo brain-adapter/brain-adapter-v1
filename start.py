@@ -10,7 +10,7 @@ import pandas
 import lightning
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
-from transformers import CLIPVisionModel
+from transformers import CLIPVisionModel, CLIPVisionModelWithProjection
 
 from data.dataset import ImageNetDataset
 
@@ -48,7 +48,7 @@ def create_embeds(
         )
     )
 
-    clip_model = CLIPVisionModel.from_pretrained(clip_model_path)
+    clip_model = CLIPVisionModelWithProjection.from_pretrained(clip_model_path)
     clip_model.to(gpu)
 
     clip_embeds_ = []
@@ -57,8 +57,8 @@ def create_embeds(
         pixel_values: torch.Tensor = batch["pixel_values"].to(gpu)
         with torch.inference_mode():
             clip_embeds_batch = clip_model(
-                pixel_values, output_hidden_states=True, return_dict=True
-            ).hidden_states[-(clip_skip + 1)]
+                pixel_values,  return_dict=True
+            ).image_embeds
 
         clip_embeds_.append(clip_embeds_batch.cpu())
 
@@ -129,9 +129,9 @@ def main(args: Namespace):
             version=Path(clip_model_path).stem,
         )
 
-    create_val_meta(
-        data_root_path=args.data_root_path, save_dir_path=args.validation_directory
-    )
+    # create_val_meta(
+    #     data_root_path=args.data_root_path, save_dir_path=args.validation_directory
+    # )
 
 
 if __name__ == "__main__":

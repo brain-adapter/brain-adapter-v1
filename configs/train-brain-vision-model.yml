@@ -1,9 +1,9 @@
 trainer:
   task: train_and_test_with_best
   seed: 2024
-  save_directory: /root/autodl-tmp/md-ckpts
+  save_directory: /root/autodl-tmp/ckpts
   check_val_every_n_epoch: 1
-  max_epochs: 5
+  max_epochs: 30
   num_devices: 1
 
   checkpoint:
@@ -28,19 +28,6 @@ lightning:
   pretrained_model_path: null
 
 model:
-  name: model.models.BrainVisionModel
-
-  vision_config:
-    encoder_name: model.modules.VisionPerceiver
-
-    input_dim: 1024
-    hidden_size: 768
-    num_attention_heads: 12
-    num_layers: 4
-    num_tokens: 257
-
-    projection_dim: 768
-
   eeg_config:
     encoder_name: model.modules.EEGTransformer
 
@@ -48,9 +35,9 @@ model:
     num_samples: 440
     patch_size: 4
     hidden_size: 768
-    num_layers: 8
+    num_layers: 6
     num_attention_heads: 12
-    mlp_ratio: 1.0
+    mlp_ratio: 4.0
 
     projection_dim: 768
 
@@ -72,13 +59,13 @@ dataset:
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 2.e-5
-    weight_decay: 0.01
+    lr: 1.e-4
+    weight_decay: 0.05
 
-# scheduler:
-#   name: flash.core.optimizers.LinearWarmupCosineAnnealingLR
-#   params:
-#     warmup_epochs: 5
-#     max_epochs: 50
-#     warmup_start_lr: 5.e-5
-#     eta_min: 4.e-5
+scheduler:
+  name: flash.core.optimizers.LinearWarmupCosineAnnealingLR
+  params:
+    warmup_epochs: 3
+    max_epochs: 30
+    warmup_start_lr: 5.e-5
+    eta_min: 4.e-5

@@ -15,7 +15,6 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
 )
-from transformers import CLIPTextModel
 
 from model.models import (
     EncoderModel,
@@ -104,9 +103,9 @@ class LitBrainVisionModel(LitBaseModel):
                 pretrained_model_path
             )
         else:
-            self.model = EncoderModelWithProjection(config=config.model)
+            self.model = EncoderModelWithProjection(config=config.model.eeg_config)
 
-        vision_config = config.lightning.get("vision_config", None)
+        vision_config = config.model.get("vision_config", None)
         if vision_config is not None:
             self.vision_model: EncoderModel = get_class(
                 vision_config.name
