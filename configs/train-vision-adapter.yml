@@ -31,12 +31,12 @@ lightning:
   num_inference_steps: 30
 
   condition_encoder:
-    name: model.models.VisionModelWithProjection
+    name: model.models.VisionModel
     pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
 
 model:
   projection_config:
-    input_dim: 768
+    input_dim: 1024
     num_tokens: 4
 
 

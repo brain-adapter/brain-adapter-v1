@@ -209,15 +209,29 @@ class VisionModel(PreTrainedModel):
         super().__init__(config)
         self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
         self.clip_skip = config.get("clip_skip", 1)
+        self.post_norm = config.get("post_norm", True)
+
+        self.post_layernorm = (
+            nn.LayerNorm(
+                self.vision_model.config.hidden_size,
+                elementwise_affine=False,
+                bias=False,
+            )  # layernorm with no parameters
+            if self.post_norm
+            else nn.Identity()
+        )
 
     def forward(self, pixel_values):
         model_outputs = self.vision_model(
             pixel_values, return_dict=True, output_hidden_states=True
         )
 
-        embeds = model_outputs.hidden_states[self.clip_skip + 1]
+        embeds: torch.FloatTensor = model_outputs.hidden_states[-(self.clip_skip + 1)]
 
-        return embeds
+        pooled_output = embeds[:, 0, :]
+        pooled_output = self.post_layernorm(pooled_output)
+
+        return pooled_output
 
     @classmethod
     def from_pretrained(
@@ -351,7 +365,6 @@ class AdapterPipeline:
         condition_model: Optional[
             Union[VisionModel, EncoderModelWithProjection, VisionModelWithProjection]
         ] = None,
-        resampler: Optional[EncoderModel] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,
         device: Union[str, torch.device, None] = None,
@@ -365,7 +378,6 @@ class AdapterPipeline:
 
         self.pipeline = stable_diffusion_pipeline
         self.condition_model = condition_model
-        self.resampler = resampler if resampler is not None else nn.Identity()
         self.adapter_model = adapter_model
 
         self.processor = processor
@@ -399,7 +411,6 @@ class AdapterPipeline:
             self.condition_model is not None
         ), "Got condition inputs but the condition model is None"
         embeds = self.condition_model(cond_tensors)
-        embeds = self.resampler(embeds)
 
         assert (
             self.adapter_model is not None
@@ -424,14 +435,9 @@ class AdapterPipeline:
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        if (
-            self.condition_model is not None
-            and self.adapter_model is not None
-            and self.resampler is not None
-        ):
+        if self.condition_model is not None and self.adapter_model is not None:
             self.condition_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
-            self.resampler.to(self.device, self.dtype)
 
         if cond_embeds is not None and uncond_embeds is not None:
             cond_embeds = cond_embeds.to(self.device, self.dtype)

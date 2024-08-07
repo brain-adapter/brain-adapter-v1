@@ -22,6 +22,7 @@ from model.models import (
     AdapterModel,
     PreTrainedModel,
     VisionModelWithProjection,
+    VisionModel,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -104,28 +105,18 @@ class LitBrainVisionModel(LitBaseModel):
             )
         else:
             self.model = EncoderModelWithProjection(config=config.model.eeg_config)
-
-        vision_config = config.model.get("vision_config", None)
-        if vision_config is not None:
-            self.vision_model: EncoderModel = get_class(
-                vision_config.name
-            ).from_pretrained(vision_config.pretrained_model_path)
-        else:
-            # no trainable adapter
-            self.vision_model = nn.Identity()
+        
+        self.vision_layernorm = nn.LayerNorm(config.model.vision_config.hidden_size)
 
         self.model.train()
-        self.vision_model.requires_grad_(False)
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, clip_embeds = (
+        eeg_values, vision_embeds = (
             batch["eeg_values"],
             batch["clip_embeds"],
         )
         eeg_embeds = self.model(eeg_values)
-
-        vision_embeds = self.vision_model(clip_embeds)
 
         loss = 1 - nn.functional.cosine_similarity(
             eeg_embeds, vision_embeds, dim=-1
@@ -208,7 +199,7 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="scheduler"
         )
         self.condition_encoder: Union[
-            VisionModelWithProjection, EncoderModelWithProjection
+            VisionModelWithProjection, EncoderModelWithProjection, VisionModel
         ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
             config.lightning.condition_encoder.pretrained_model_path
         )
@@ -227,14 +218,6 @@ class LitAdapterModel(LitBaseModel):
             self.model: AdapterModel = AdapterModel.from_unet(self.unet, config.model)
 
         self.model.train()
-
-        resampler_config = config.lightning.get("resampler", None)
-        self.resampler = (
-            EncoderModel(resampler_config)
-            if resampler_config is not None
-            else nn.Identity()
-        )
-        self.resampler.train()
 
     @override
     def forward(self, batch) -> Dict:
@@ -266,8 +249,6 @@ class LitAdapterModel(LitBaseModel):
         # get condition embeds
         with torch.no_grad():
             cond_embeds = self.condition_encoder(condition_inputs)
-
-        cond_embeds = self.resampler(cond_embeds)
 
         cond_embeds_ = []
         for cond_embed, drop in zip(cond_embeds, drops):
@@ -330,7 +311,6 @@ class LitAdapterModel(LitBaseModel):
         )
         with torch.inference_mode():
             embeds = self.condition_encoder(cond_inputs)
-            embeds = self.resampler(embeds)
 
             cond_embeds = self.model(embeds)
             uncond_embeds = self.model(torch.zeros_like(embeds))
@@ -377,7 +357,6 @@ class LitAdapterModel(LitBaseModel):
         )
         with torch.inference_mode():
             embeds = self.condition_encoder(cond_inputs)
-            embeds = self.resampler(embeds)
 
             cond_embeds = self.model(embeds)
             uncond_embeds = self.model(torch.zeros_like(embeds))
@@ -408,13 +387,3 @@ class LitAdapterModel(LitBaseModel):
                         save_directory, f"{image_indexes[i]}-{j}.png"
                     )
                     image.save(save_path)
-
-    @override
-    @rank_zero_only
-    def save_pretrained(self, save_directory: str):
-        adapter_path = os.path.join(save_directory, "adapter")
-        self.model.save_pretrained(adapter_path)
-
-        if isinstance(self.resampler, EncoderModel):
-            resampler_path = os.path.join(save_directory, "resampler")
-            self.resampler.save_pretrained(resampler_path)
