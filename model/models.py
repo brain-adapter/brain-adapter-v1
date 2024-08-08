@@ -208,28 +208,13 @@ class VisionModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
-        self.clip_skip = config.get("clip_skip", 1)
-        self.post_norm = config.get("post_norm", True)
-
-        self.post_layernorm = (
-            nn.LayerNorm(
-                self.vision_model.config.hidden_size,
-                elementwise_affine=False,
-                bias=False,
-            )  # layernorm with no parameters
-            if self.post_norm
-            else nn.Identity()
-        )
 
     def forward(self, pixel_values):
         model_outputs = self.vision_model(
-            pixel_values, return_dict=True, output_hidden_states=True
+            pixel_values, return_dict=True, output_hidden_states=False
         )
 
-        embeds: torch.FloatTensor = model_outputs.hidden_states[-(self.clip_skip + 1)]
-
-        pooled_output = embeds[:, 0, :]
-        pooled_output = self.post_layernorm(pooled_output)
+        pooled_output: torch.FloatTensor = model_outputs.pooler_output
 
         return pooled_output
 

@@ -48,7 +48,7 @@ def create_embeds(
         )
     )
 
-    clip_model = CLIPVisionModelWithProjection.from_pretrained(clip_model_path)
+    clip_model = CLIPVisionModel.from_pretrained(clip_model_path)
     clip_model.to(gpu)
 
     clip_embeds_ = []
@@ -58,7 +58,7 @@ def create_embeds(
         with torch.inference_mode():
             clip_embeds_batch = clip_model(
                 pixel_values,  return_dict=True
-            ).image_embeds
+            ).pooler_output
 
         clip_embeds_.append(clip_embeds_batch.cpu())
 
