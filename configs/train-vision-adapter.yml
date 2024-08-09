@@ -2,7 +2,7 @@ trainer:
   task: train_only
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
-  val_check_interval: 500
+  val_check_interval: 10000
   max_epochs: 4
   num_devices: 1
 
@@ -12,7 +12,7 @@ trainer:
     filename: lit-{step}
     save_top_k: 2
     mode: max
-    every_n_train_steps: 2000
+    every_n_train_steps: 10000
     save_last: false
 
 # for Tensorboard logger
@@ -31,12 +31,12 @@ lightning:
   num_inference_steps: 30
 
   condition_encoder:
-    name: model.models.VisionModel
+    name: model.models.VisionModelWithProjection
     pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
 
 model:
   projection_config:
-    input_dim: 1024
+    input_dim: 768
     num_tokens: 4
 
 dataset: 

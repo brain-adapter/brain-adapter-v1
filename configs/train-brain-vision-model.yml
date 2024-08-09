@@ -34,15 +34,12 @@ model:
     num_channels: 128
     num_samples: 440
     patch_size: 4
-    hidden_size: 1024
-    num_layers: 8
-    num_attention_heads: 16
+    hidden_size: 768
+    num_layers: 6
+    num_attention_heads: 12
     mlp_ratio: 1.0
 
-    projection_dim: 1024
-  
-  vision_config:
-    hidden_size: 1024
+    projection_dim: 512
 
 
 dataset: 
