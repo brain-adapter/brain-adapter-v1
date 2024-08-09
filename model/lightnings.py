@@ -17,7 +17,6 @@ from diffusers import (
 )
 
 from model.models import (
-    EncoderModel,
     EncoderModelWithProjection,
     AdapterModel,
     PreTrainedModel,
@@ -105,8 +104,6 @@ class LitBrainVisionModel(LitBaseModel):
             )
         else:
             self.model = EncoderModelWithProjection(config=config.model.eeg_config)
-        
-        self.vision_layernorm = nn.LayerNorm(config.model.vision_config.hidden_size)
 
         self.model.train()
 

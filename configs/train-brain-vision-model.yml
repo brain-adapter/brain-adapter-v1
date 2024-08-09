@@ -1,7 +1,7 @@
 trainer:
   task: train_and_test_with_best
   seed: 2024
-  save_directory: /root/autodl-tmp/ckpts
+  save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
   max_epochs: 30
   num_devices: 1
