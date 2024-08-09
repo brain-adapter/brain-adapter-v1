@@ -98,9 +98,15 @@ def main(config: DictConfig):
         trainer.test(model, datamodule=datamodule)
 
     # save model
-    if ckpt_callback is not None and task != Task.TEST_ONLY and trainer.strategy.is_global_zero:
+    save_directory = config.trainer.get("save_directory", None)
+
+    if (
+        ckpt_callback is not None
+        and task != Task.TEST_ONLY
+        and trainer.strategy.is_global_zero
+        and save_directory is not None
+    ):
         ckpt_paths = ckpt_callback.best_k_models.keys()
-        save_directory = config.trainer.get("save_directory", None)
 
         for path in ckpt_paths:
             model = model_class.load_from_checkpoint(path, map_location="cpu")

@@ -139,7 +139,7 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         # handle drop
         self.eeg_drop_prob = config.get("eeg_drop_prob", 0.1)
 
-        if mode == "val":
+        if mode == "val" or self.mode == "test":
             self.splitter = random.sample(
                 self.splitter, config.get("num_validation_images", 4)
             )
