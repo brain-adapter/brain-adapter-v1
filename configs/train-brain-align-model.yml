@@ -24,7 +24,7 @@ logger:
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitBrainVisionModel
+  name: model.lightnings.LitBrainStudentModel
   pretrained_model_path: null
 
 model:
@@ -35,11 +35,12 @@ model:
     num_samples: 440
     patch_size: 4
     hidden_size: 768
-    num_layers: 6
+    num_layers: 8
     num_attention_heads: 12
     mlp_ratio: 1.0
+    dropout: 0.1
 
-    projection_dim: 512
+    projection_dim: 768
 
 
 dataset: 
@@ -47,11 +48,11 @@ dataset:
 
   num_workers: 4 # num_devices * 4
   subject: 0 # 0 means using data of all subjects
-  batch_size: 16
+  batch_size: 4
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  clip_embeds_path: /root/autodl-tmp/data/eeg-imagenet/embeds/clip-vit-l-14-embeds.bin
+  teacher_embeds_path: /root/autodl-tmp/data/eeg-imagenet/embeds/clip-vit-l-14-text-embeds.bin
 
   merge_train_and_val: true
 

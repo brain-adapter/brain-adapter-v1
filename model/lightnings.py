@@ -93,7 +93,7 @@ class LitBaseModel(lightning.LightningModule):
         return [optimizer]
 
 
-class LitBrainVisionModel(LitBaseModel):
+class LitBrainStudentModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
@@ -109,19 +109,19 @@ class LitBrainVisionModel(LitBaseModel):
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, vision_embeds = (
+        eeg_values, teacher_embeds = (
             batch["eeg_values"],
-            batch["clip_embeds"],
+            batch["teacher_embeds"],
         )
         eeg_embeds = self.model(eeg_values)
 
         loss = 1 - nn.functional.cosine_similarity(
-            eeg_embeds, vision_embeds, dim=-1
+            eeg_embeds, teacher_embeds, dim=-1
         ).mean(dim=-1)
 
         return {
             "eeg_embeds": eeg_embeds,
-            "vision_embeds": vision_embeds,
+            "teacher_embeds": teacher_embeds,
             "loss": loss,
         }
 

@@ -1,16 +1,18 @@
 import os
 from typing import Dict, Optional, Union, List
 import random
+import json
 
 import torch
 from torch.utils.data import Dataset
 from omegaconf import DictConfig
 from PIL import Image
 import pandas
-from transformers import CLIPImageProcessor, CLIPTokenizer
+from transformers import CLIPImageProcessor, CLIPTokenizer, ViTImageProcessor
 from torchvision import transforms
 
 from model.evaluation import resize_images
+from model.modules import get_class
 
 
 class EEGProcessor:
@@ -87,9 +89,9 @@ class EEGImageNetDataset(Dataset):
             i for i in splitter if 450 <= self.dataset[i]["eeg"].shape[-1] <= 600
         ]
 
-        self.clip_embeds = (
-            torch.load(config.clip_embeds_path)
-            if config.get("clip_embeds_path") is not None
+        self.teacher_embeds = (
+            torch.load(config.teacher_embeds_path)
+            if config.get("teacher_embeds_path") is not None
             else None
         )
 
@@ -111,8 +113,8 @@ class EEGImageNetDataset(Dataset):
             "subject": item["subject"],
         }
 
-        if self.clip_embeds is not None:
-            data["clip_embeds"] = self.clip_embeds[item["image"]]
+        if self.teacher_embeds is not None:
+            data["teacher_embeds"] = self.teacher_embeds[item["image"]]
 
         return data
 
@@ -262,9 +264,20 @@ class ImageNetDataset(Dataset):
     def __init__(self, config: DictConfig):
         super().__init__()
         self.image_root: str = config.image_root_path
-        self.image_meta: List[str] = config.meta_data
         self.image_ext: str = config.image_ext
+
+        image_list_path = os.path.join(config.text_root_path, "image-list.json")
+        with open(image_list_path, "r") as f:
+            self.image_meta: List[str] = json.load(f)
+
+        text_list_path = os.path.join(config.text_root_path, "text-list.json")
+        with open(text_list_path, "r") as f:
+            self.text_list = json.load(f)
+
         self.image_processor: CLIPImageProcessor = CLIPImageProcessor.from_pretrained(
+            config.clip_model_path
+        )
+        self.text_processor: CLIPTokenizer = CLIPTokenizer.from_pretrained(
             config.clip_model_path
         )
 
@@ -283,4 +296,11 @@ class ImageNetDataset(Dataset):
             images=raw_image, return_tensors="pt"
         ).pixel_values.squeeze(dim=0)
 
-        return {"pixel_values": pixel_values}
+        text = self.text_list[index]
+        tokenizer_output = self.text_processor(text, return_tensors="pt")
+
+        return {
+            "pixel_values": pixel_values,
+            "input_ids": tokenizer_output.input_ids,
+            "attention_mask": tokenizer_output.attention_mask,
+        }

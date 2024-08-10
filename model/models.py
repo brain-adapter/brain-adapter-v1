@@ -8,9 +8,10 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from diffusers import UNet2DConditionModel, StableDiffusionPipeline
 from transformers import (
-    CLIPVisionModel,
+    ViTModel,
     CLIPImageProcessor,
     CLIPVisionModelWithProjection,
+    CLIPTextModelWithProjection,
 )
 from PIL import Image
 
@@ -165,10 +166,19 @@ class VisionModelWithProjection(PreTrainedModel):
             config.vision_model_path
         )
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        pixel_values: torch.FloatTensor,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> torch.Tensor:
         image_embeds = self.vision_model(
-            pixel_values, output_hidden_states=False, return_dict=True
-        ).image_embeds
+            pixel_values,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )[0]
 
         return image_embeds
 
@@ -204,19 +214,32 @@ class VisionModelWithProjection(PreTrainedModel):
         OmegaConf.save(self.config, config_path)
 
 
-class VisionModel(PreTrainedModel):
+class TextModelWithProjection(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.vision_model = CLIPVisionModel.from_pretrained(config.vision_model_path)
-
-    def forward(self, pixel_values):
-        model_outputs = self.vision_model(
-            pixel_values, return_dict=True, output_hidden_states=False
+        self.text_model = CLIPTextModelWithProjection.from_pretrained(
+            config.text_model_path
         )
 
-        pooled_output: torch.FloatTensor = model_outputs.pooler_output
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ):
+        text_embeds = self.text_model(
+            input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )[0]
 
-        return pooled_output
+        return text_embeds
 
     @classmethod
     def from_pretrained(
@@ -348,7 +371,7 @@ class AdapterPipeline:
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
         condition_model: Optional[
-            Union[VisionModel, EncoderModelWithProjection, VisionModelWithProjection]
+            Union[EncoderModelWithProjection, VisionModelWithProjection]
         ] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,
