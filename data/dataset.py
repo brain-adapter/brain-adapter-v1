@@ -138,8 +138,9 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         self.image_root_path = config.image_root_path
         self.resolution = config.get("resolution", 512)
 
-        # handle drop
-        self.eeg_drop_prob = config.get("eeg_drop_prob", 0.1)
+        # handle drop to enhance classifier-free guidance
+        self.text_drop_prob: float = config.get("text_drop_prob", 0.1)
+        self.image_drop_prob: float = config.get("image_drop_prob", 0.05)
 
         if mode == "val" or self.mode == "test":
             self.splitter = random.sample(
@@ -165,12 +166,16 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
             else None
         )
 
-        drop = torch.rand(1) < self.eeg_drop_prob
+        drop = torch.rand(2) < torch.tensor([self.image_drop_prob, self.text_drop_prob])
+
+        eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
 
         data = {
             "pixel_values": pixel_values,
-            "condition_inputs": self.eeg_processor(item["eeg"], return_batches=False),
-            "drops": drop,
+            "vision_condition": eeg_inputs,
+            "text_condition": eeg_inputs,
+            "vision_drop": drop[0],
+            "text_drop": drop[1]
         }
 
         if self.mode == "val" or self.mode == "test":
@@ -208,8 +213,8 @@ class ImageTextDataset(Dataset):
         )
 
         # handle drop to enhance classifier-free guidance
-        self.text_drop_prob = config.get("text_drop_prob", 1.0)
-        self.image_drop_prob = config.get("image_drop_prob", 0.1)
+        self.text_drop_prob = config.get("text_drop_prob", 0.1)
+        self.image_drop_prob = config.get("image_drop_prob", 0.05)
 
     def __len__(self):
         return len(self.meta)
@@ -231,12 +236,9 @@ class ImageTextDataset(Dataset):
             else None
         )
 
-        drop_mask = torch.rand(2) < torch.tensor(
-            [self.image_drop_prob, self.text_drop_prob]
-        )
+        drop = torch.rand(2) < torch.tensor([self.image_drop_prob, self.text_drop_prob])
 
-        drop = drop_mask[0]
-        text = "" if drop_mask[1] else self.meta.iloc[index]["caption"]
+        text = self.meta.iloc[index]["caption"]
 
         input_ids: torch.Tensor = self.text_processor(
             text,
@@ -248,9 +250,10 @@ class ImageTextDataset(Dataset):
 
         data = {
             "pixel_values": diffusion_pixel_values,
-            "condition_inputs": clip_pixel_values.squeeze(dim=0),
-            "input_ids": input_ids.squeeze(dim=0),
-            "drops": drop,
+            "vision_condition": clip_pixel_values.squeeze(dim=0),
+            "text_condition": input_ids.squeeze(dim=0),
+            "vision_drop": drop[0],
+            "text_drop": drop[1],
         }
 
         if self.mode == "val" or self.mode == "test":
@@ -297,7 +300,13 @@ class ImageNetDataset(Dataset):
         ).pixel_values.squeeze(dim=0)
 
         text = self.text_list[index]
-        tokenizer_output = self.text_processor(text, return_tensors="pt")
+        tokenizer_output = self.text_processor(
+            text,
+            padding="max_length",
+            max_length=self.text_processor.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
 
         return {
             "pixel_values": pixel_values,

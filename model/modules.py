@@ -1,8 +1,9 @@
-from typing import Optional, Tuple, Type
+from typing import Optional, Tuple, Type, Dict
 import torch
 from torch import nn
 from omegaconf import DictConfig
 import torch.nn.functional as F
+from diffusers.models.attention_processor import Attention
 
 from .activations import get_activation
 
@@ -457,9 +458,9 @@ class VisionPerceiver(nn.Module):
 class AdapterProjection(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.num_tokens = config.get("num_tokens", 4)
-        self.cross_attention_dim = config.get("cross_attention_dim", 768)
-        self.input_dim = config.get("input_dim", 768)
+        self.num_tokens = config.num_tokens
+        self.cross_attention_dim = config.cross_attention_dim
+        self.input_dim = config.input_dim
 
         self.proj = nn.Linear(
             self.input_dim, self.num_tokens * self.cross_attention_dim
@@ -481,11 +482,7 @@ class AttnProcessor(nn.Module):
     Processor for implementing scaled dot-product attention (enabled by default if you're using PyTorch 2.0).
     """
 
-    def __init__(
-        self,
-        hidden_size=None,
-        cross_attention_dim=None,
-    ):
+    def __init__(self):
         super().__init__()
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError(
@@ -494,16 +491,16 @@ class AttnProcessor(nn.Module):
 
     def __call__(
         self,
-        attn,
-        hidden_states,
-        encoder_hidden_states=None,
-        attention_mask=None,
-        temb=None,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
         *args,
         **kwargs,
-    ):
-        residual = hidden_states
+    ) -> torch.FloatTensor:
 
+        residual = hidden_states
         if attn.spatial_norm is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)
 
@@ -585,7 +582,7 @@ class AttnProcessor(nn.Module):
         return hidden_states
 
 
-class MixedAttnProcessor(nn.Module):
+class IPAttnProcessor(nn.Module):
     r"""
     Attention processor for IP-Adapater for PyTorch 2.0.
     Args:
@@ -608,7 +605,7 @@ class MixedAttnProcessor(nn.Module):
 
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError(
-                "AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
+                "AttnProcessor requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
 
         self.hidden_size = hidden_size
@@ -746,9 +743,9 @@ class MixedAttnProcessor(nn.Module):
         return hidden_states
 
 
-class VisionAttnProcessor(nn.Module):
+class SingleAttnProcessor(nn.Module):
     r"""
-    Attention processor for vision condition for PyTorch 2.0.
+    Attention processor for single condition for PyTorch 2.0.
     Args:
         hidden_size (`int`):
             The hidden size of the attention layer.
@@ -756,30 +753,27 @@ class VisionAttnProcessor(nn.Module):
             The number of channels in the `encoder_hidden_states`.
     """
 
-    def __init__(self, hidden_size: int, cross_attention_dim: Optional[int] = None):
+    def __init__(self, hidden_size: int, cross_attention_dim: int):
         super().__init__()
 
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError(
-                "AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
+                f"{self.__class__.__name__} requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
 
-        self.to_k_ip = nn.Linear(
-            cross_attention_dim or hidden_size, hidden_size, bias=False
-        )
-        self.to_v_ip = nn.Linear(
-            cross_attention_dim or hidden_size, hidden_size, bias=False
-        )
+        self.hidden_size = hidden_size
+        self.cross_attention_dim = cross_attention_dim
+
+        self.to_key = nn.Linear(cross_attention_dim, hidden_size, bias=False)
+        self.to_value = nn.Linear(cross_attention_dim, hidden_size, bias=False)
 
     def __call__(
         self,
-        attn,
-        hidden_states,
-        encoder_hidden_states=None,
-        attention_mask=None,
-        temb=None,
-        *args,
-        **kwargs,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
     ):
         residual = hidden_states
 
@@ -794,11 +788,7 @@ class VisionAttnProcessor(nn.Module):
                 batch_size, channel, height * width
             ).transpose(1, 2)
 
-        batch_size, sequence_length, _ = (
-            hidden_states.shape
-            if encoder_hidden_states is None
-            else encoder_hidden_states.shape
-        )
+        batch_size, sequence_length, _ = encoder_hidden_states.shape
 
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(
@@ -807,16 +797,8 @@ class VisionAttnProcessor(nn.Module):
 
         query = attn.to_q(hidden_states)
 
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        elif attn.norm_cross:
-            encoder_hidden_states = attn.norm_encoder_hidden_states(
-                encoder_hidden_states
-            )
-
-        # replace key and value as vision condition
-        key = self.to_k_ip(encoder_hidden_states)
-        value = self.to_v_ip(encoder_hidden_states)
+        key = self.to_key(encoder_hidden_states)
+        value = self.to_value(encoder_hidden_states)
 
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
@@ -837,9 +819,125 @@ class VisionAttnProcessor(nn.Module):
         )
         hidden_states = hidden_states.to(query.dtype)
 
-        with torch.no_grad():
-            self.attn_map = query @ key.transpose(-2, -1).softmax(dim=-1)
-            # print(self.attn_map.shape)
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        if input_ndim == 4:
+            hidden_states = hidden_states.transpose(-1, -2).reshape(
+                batch_size, channel, height, width
+            )
+
+        if attn.residual_connection:
+            hidden_states = hidden_states + residual
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+
+        return hidden_states
+
+
+class MixedAttnProcessor(nn.Module):
+    r"""
+    Attention processor for mixed condition for PyTorch 2.0.
+    Args:
+        hidden_size (`int`):
+            The hidden size of the attention layer.
+        cross_attention_dim (`int`):
+            The number of channels in the `encoder_hidden_states`.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        cross_attention_dim: int,
+        num_tokens: Dict,
+    ):
+        super().__init__()
+
+        if not hasattr(F, "scaled_dot_product_attention"):
+            raise ImportError(
+                f"{self.__class__.__name__} requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
+            )
+
+        self.num_tokens = num_tokens
+
+        self.hidden_size = hidden_size
+        self.cross_attention_dim = cross_attention_dim
+
+        self.to_key = nn.ModuleDict(
+            {
+                key: nn.Linear(cross_attention_dim, hidden_size, bias=False)
+                for key in num_tokens.keys()
+            }
+        )
+
+        self.to_value = nn.ModuleDict(
+            {
+                key: nn.Linear(cross_attention_dim, hidden_size, bias=False)
+                for key in num_tokens.keys()
+            }
+        )
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Dict[str, torch.FloatTensor],
+        attention_mask: Optional[torch.FloatTensor] = None,
+        temb: Optional[torch.FloatTensor] = None,
+    ):
+        residual = hidden_states
+
+        if attn.spatial_norm is not None:
+            hidden_states = attn.spatial_norm(hidden_states, temb)
+
+        input_ndim = hidden_states.ndim
+
+        if input_ndim == 4:
+            batch_size, channel, height, width = hidden_states.shape
+            hidden_states = hidden_states.view(
+                batch_size, channel, height * width
+            ).transpose(1, 2)
+
+        batch_size = hidden_states.shape[0]
+
+        if attn.group_norm is not None:
+            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(
+                1, 2
+            )
+
+        query = attn.to_q(hidden_states)
+
+        inner_dim = key.shape[-1]
+        head_dim = inner_dim // attn.heads
+
+        query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+        hidden_states = 0.0
+
+        for adapter_name, adapter_hidden_states in encoder_hidden_states.items():
+            to_key = self.to_key[adapter_name]
+            to_value = self.to_value(adapter_name)
+
+            key = to_key(adapter_hidden_states)
+            value = to_value(adapter_hidden_states)
+
+            key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+            value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+
+            # the output of sdp = (batch, num_heads, seq_len, head_dim)
+            # TODO: add support for attn.scale when we move to Torch 2.1
+            adapter_hidden_states = F.scaled_dot_product_attention(
+                query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False
+            )
+
+            adapter_hidden_states = adapter_hidden_states.transpose(1, 2).reshape(
+                batch_size, -1, attn.heads * head_dim
+            )
+            adapter_hidden_states = adapter_hidden_states.to(query.dtype)
+
+            hidden_states = hidden_states + adapter_hidden_states
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)

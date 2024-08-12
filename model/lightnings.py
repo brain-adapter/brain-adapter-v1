@@ -21,7 +21,7 @@ from model.models import (
     AdapterModel,
     PreTrainedModel,
     VisionModelWithProjection,
-    VisionModel,
+    TextModelWithProjection,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -115,9 +115,7 @@ class LitBrainStudentModel(LitBaseModel):
         )
         eeg_embeds = self.model(eeg_values)
 
-        loss = 1 - nn.functional.cosine_similarity(
-            eeg_embeds, teacher_embeds, dim=-1
-        ).mean(dim=-1)
+        loss = nn.functional.mse_loss(eeg_embeds, teacher_embeds)
 
         return {
             "eeg_embeds": eeg_embeds,
@@ -195,15 +193,26 @@ class LitAdapterModel(LitBaseModel):
         self.noise_scheduler = DDPMScheduler.from_pretrained(
             self.diffusion_model_path, subfolder="scheduler"
         )
-        self.condition_encoder: Union[
-            VisionModelWithProjection, EncoderModelWithProjection, VisionModel
-        ] = get_class(config.lightning.condition_encoder.name).from_pretrained(
-            config.lightning.condition_encoder.pretrained_model_path
-        )
+
+        self.condition_encoders: Dict[
+            str,
+            Union[
+                VisionModelWithProjection,
+                EncoderModelWithProjection,
+                TextModelWithProjection,
+            ],
+        ] = {
+            name: get_class(encoder_config.name).from_pretrained(
+                encoder_config.pretrained_model_path
+            )
+            for name, encoder_config in config.lightning.condition_encoders.items()
+        }
 
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
-        self.condition_encoder.requires_grad_(False)
+
+        for encoder in self.condition_encoders.values():
+            encoder.requires_grad_(False)
 
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
@@ -218,11 +227,8 @@ class LitAdapterModel(LitBaseModel):
 
     @override
     def forward(self, batch) -> Dict:
-        pixel_values, condition_inputs, drops = (
-            batch["pixel_values"],
-            batch["condition_inputs"],
-            batch["drops"],
-        )
+        pixel_values = batch["pixel_values"]
+        # Encode pixel values into latent space
         with torch.no_grad():
             latents = self.vae.encode(pixel_values).latent_dist.sample()
             latents: torch.Tensor = latents * self.vae.config.scaling_factor
@@ -243,18 +249,26 @@ class LitAdapterModel(LitBaseModel):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-        # get condition embeds
-        with torch.no_grad():
-            cond_embeds = self.condition_encoder(condition_inputs)
+        cond_embeds_dict = {}
 
-        cond_embeds_ = []
-        for cond_embed, drop in zip(cond_embeds, drops):
-            cond_embeds_.append(
-                torch.where(drop, torch.zeros_like(cond_embed), cond_embed)
-            )
+        # For each adapter and condition encoder
+        for key, encoder in self.condition_encoders.items():
+            condition_inputs = batch["_".join([key, "condition"])]
+            drops = batch["_".join([key, "drop"])]
 
-        cond_embeds = torch.stack(cond_embeds_, dim=0)
-        cond_embeds = self.model(cond_embeds)
+            # Get encoder embeds
+            with torch.no_grad():
+                cond_embeds = encoder(condition_inputs)
+
+            cond_embeds_ = []
+            for cond_embed, drop in zip(cond_embeds, drops):
+                cond_embeds_.append(
+                    torch.where(drop, torch.zeros_like(cond_embed), cond_embed)
+                )
+            
+            cond_embeds_dict[key] = torch.stack(cond_embeds_, dim=0)
+
+        cond_embeds = self.model(cond_embeds_dict)
 
         noise_pred: torch.Tensor = self.unet(
             noisy_latents,
@@ -307,7 +321,7 @@ class LitAdapterModel(LitBaseModel):
             batch["ground_truth"],
         )
         with torch.inference_mode():
-            embeds = self.condition_encoder(cond_inputs)
+            embeds = self.condition_encoders(cond_inputs)
 
             cond_embeds = self.model(embeds)
             uncond_embeds = self.model(torch.zeros_like(embeds))
@@ -353,7 +367,7 @@ class LitAdapterModel(LitBaseModel):
             batch["image_indexes"],
         )
         with torch.inference_mode():
-            embeds = self.condition_encoder(cond_inputs)
+            embeds = self.condition_encoders(cond_inputs)
 
             cond_embeds = self.model(embeds)
             uncond_embeds = self.model(torch.zeros_like(embeds))

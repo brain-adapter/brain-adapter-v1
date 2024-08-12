@@ -25,19 +25,31 @@ logger:
 
 lightning:
   name: model.lightnings.LitAdapterModel
-  diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
+  diffusion_model_path: &diffusion_model_path /Users/zhengjiawen/Desktop/models/stable-diffusion-v1-5 #/root/autodl-tmp/pretrained/stable-diffusion-v1-5
   snr_gamma: 5.0
   num_images_per_prompt: 4
   num_inference_steps: 30
 
-  condition_encoder:
-    name: model.models.VisionModelWithProjection
-    pretrained_model_path: /root/autodl-tmp/pretrained/vision-model
+  condition_encoders:
+    vision:
+      name: model.models.VisionModelWithProjection
+      pretrained_model_path: /root/autodl-tmp/pretrained/clip-model
+    
+    text:
+      name: model.models.TextModelWithProjection
+      pretrained_model_path: /root/autodl-tmp/pretrained/clip-model
 
 model:
-  projection_config:
-    input_dim: 768
-    num_tokens: 4
+  diffusion_model_path: *diffusion_model_path
+
+  projection_configs:
+    vision:
+      input_dim: 768
+      num_tokens: 4
+    
+    text:
+      input_dim: 768
+      num_tokens: 4
 
 dataset: 
   name: data.dataset.ImageTextDataset

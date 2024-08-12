@@ -64,8 +64,8 @@ def create_embeds(
         input_ids: torch.Tensor = batch["input_ids"].to(gpu)
 
         with torch.inference_mode():
-            vision_embeds_batch = vision_model(pixel_values)
-            text_embeds_batch = text_model(input_ids)
+            vision_embeds_batch = vision_model(pixel_values)[0]
+            text_embeds_batch = text_model(input_ids)[0]
 
         vision_embeds_.append(vision_embeds_batch.cpu())
         text_embeds_.append(text_embeds_batch.cpu())
@@ -135,7 +135,7 @@ def main(args: Namespace):
     for model_path in args.clip_model_list:
         create_embeds(
             data_root_path=args.data_root_path,
-            vision_model_path=model_path,
+            clip_model_path=model_path,
             save_dir_path=args.embeds_file_path,
             version=Path(model_path).stem,
         )

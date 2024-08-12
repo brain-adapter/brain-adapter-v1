@@ -8,7 +8,6 @@ from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from diffusers import UNet2DConditionModel, StableDiffusionPipeline
 from transformers import (
-    ViTModel,
     CLIPImageProcessor,
     CLIPVisionModelWithProjection,
     CLIPTextModelWithProjection,
@@ -17,7 +16,7 @@ from PIL import Image
 
 from model.modules import (
     AttnProcessor,
-    VisionAttnProcessor,
+    MixedAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,
     get_class,
@@ -73,16 +72,8 @@ class PreTrainedModel(nn.Module):
         # save the model state_dict
         torch.save(model.state_dict(), model_path)
 
-    @classmethod
-    def from_pretrained(
-        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
-    ):
-        """
-        Instantiate a pretrained PyTorch model from a pretrained model configuration.
-
-        The model is set in evaluation mode - `model.eval()` - by default, and dropout modules are deactivated. To
-        train the model, set it back in training mode with `model.train()`.
-        """
+    @staticmethod
+    def load_config(pretrained_model_path: str, config: Optional[DictConfig] = None):
         if not isinstance(config, DictConfig):
             conf_path = os.path.join(pretrained_model_path, "config.yml")
             if not os.path.exists(conf_path):
@@ -94,10 +85,24 @@ class PreTrainedModel(nn.Module):
             # overwrite
             config = copy.deepcopy(config)
 
+        return config
+
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
+    ):
+        """
+        Instantiate a pretrained PyTorch model from a pretrained model configuration.
+
+        The model is set in evaluation mode - `model.eval()` - by default, and dropout modules are deactivated. To
+        train the model, set it back in training mode with `model.train()`.
+        """
+        config = cls.load_config(pretrained_model_path, config)
+
         model: nn.Module = cls(config)
 
         model_path = os.path.join(pretrained_model_path, "pytorch_model.bin")
-        model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        model.load_state_dict(copy.deepcopy(torch.load(model_path, map_location="cpu")))
 
         # Set model in evaluation mode to deactivate DropOut modules by default
         model.eval()
@@ -163,7 +168,7 @@ class VisionModelWithProjection(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.vision_model = CLIPVisionModelWithProjection.from_pretrained(
-            config.vision_model_path
+            config.model_path
         )
 
     def forward(
@@ -182,29 +187,21 @@ class VisionModelWithProjection(PreTrainedModel):
 
         return image_embeds
 
+    @override
     @classmethod
     def from_pretrained(
         cls,
         pretrained_model_path: Optional[str] = None,
         config: Optional[DictConfig] = None,
     ) -> PreTrainedModel:
-        if not isinstance(config, DictConfig) and pretrained_model_path is not None:
-            conf_path = os.path.join(pretrained_model_path, "config.yml")
-            if not os.path.exists(conf_path):
-                raise FileNotFoundError(
-                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
-                )
-            config = OmegaConf.load(conf_path)
-        else:
-            assert config is not None
-            # overwrite
-            config = copy.deepcopy(config)
+        config = cls.load_config(pretrained_model_path, config)
 
         model = cls(config)
         # Set model in evaluation mode to deactivate DropOut modules by default
         model.eval()
         return model
 
+    @override
     def save_pretrained(self, save_directory: str):
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -218,7 +215,7 @@ class TextModelWithProjection(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.text_model = CLIPTextModelWithProjection.from_pretrained(
-            config.text_model_path
+            config.model_path
         )
 
     def forward(
@@ -241,29 +238,21 @@ class TextModelWithProjection(PreTrainedModel):
 
         return text_embeds
 
+    @override
     @classmethod
     def from_pretrained(
         cls,
         pretrained_model_path: Optional[str] = None,
         config: Optional[DictConfig] = None,
     ) -> PreTrainedModel:
-        if not isinstance(config, DictConfig) and pretrained_model_path is not None:
-            conf_path = os.path.join(pretrained_model_path, "config.yml")
-            if not os.path.exists(conf_path):
-                raise FileNotFoundError(
-                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
-                )
-            config = OmegaConf.load(conf_path)
-        else:
-            assert config is not None
-            # overwrite
-            config = copy.deepcopy(config)
+        config = cls.load_config(pretrained_model_path, config)
 
         model = cls(config)
         # Set model in evaluation mode to deactivate DropOut modules by default
         model.eval()
         return model
 
+    @override
     def save_pretrained(self, save_directory: str):
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -277,19 +266,26 @@ class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.projection = AdapterProjection(config.projection_config)
+        proj_dict = {}
+        num_tokens = {}
 
-        # Init using `from_unet` only
-        unet = UNet2DConditionModel(**OmegaConf.to_object(config.unet_config))
-        self.adapter_modules = nn.ModuleList(self._process_unet(unet).values())
+        for key, proj_conf in config.projection_configs.items():
+            proj_dict[key] = AdapterProjection(proj_conf)
+            num_tokens[key] = proj_conf.num_tokens
+
+        self.projections = nn.ModuleDict(proj_dict)
+        self.num_tokens = num_tokens
+
+        # init this model using method `from_unet`
+        self.adapter_modules = None
 
         self.apply(self._init_weights)
 
-    @staticmethod
     def _process_unet(
+        self,
         unet: UNet2DConditionModel,
         load_weights: Optional[bool] = None,
-    ) -> Dict:
+    ) -> Dict[str, nn.Module]:
         """
         Get attention processor dict of the given unet and replace processors
         """
@@ -313,55 +309,89 @@ class AdapterModel(PreTrainedModel):
             if cross_attention_dim is None:
                 attn_procs[name] = AttnProcessor()
             else:
-                attn_procs[name] = VisionAttnProcessor(
-                    hidden_size=hidden_size,
-                    cross_attention_dim=cross_attention_dim,
+                attn_procs[name] = MixedAttnProcessor(
+                    hidden_size, cross_attention_dim, num_tokens=self.num_tokens
                 )
                 if load_weights:
                     unet_sd = unet.state_dict()
                     layer_name = name.split(".processor")[0]
-                    weights = {
-                        "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"],
-                        "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"],
-                    }
+
+                    # format weights
+                    weights = {}
+                    for adapter_name in self.num_tokens.keys():
+                        weights[f"to_key.{adapter_name}.weight"] = copy.deepcopy(
+                            unet_sd[layer_name + ".to_k.weight"]
+                        )
+                        weights[f"to_value.{adapter_name}.weight"] = copy.deepcopy(
+                            unet_sd[layer_name + ".to_v.weight"]
+                        )
+
                     attn_procs[name].load_state_dict(weights)
+
         return attn_procs
 
-    def forward(self, cond_embeds: torch.Tensor):
-        return self.projection(cond_embeds)
+    def forward(
+        self, cond_embeds: Dict[str, torch.FloatTensor]
+    ) -> Dict[str, torch.FloatTensor]:
+        model_outputs = {}
+        for key, embeds in cond_embeds.items():
+            projection = self.projections[key]
+            model_outputs[key] = projection(embeds)
+
+        return model_outputs
 
     def bind_unet(self, unet: UNet2DConditionModel):
-        unet.set_attn_processor(self._process_unet(unet))
+        unet.set_attn_processor(self._processor_dict)
+
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
     @classmethod
     def from_unet(
-        cls,
-        unet: UNet2DConditionModel,
-        config: DictConfig,
-        bind_unet: Optional[bool] = None,
-    ) -> PreTrainedModel:
-        unet_config = OmegaConf.create(dict(**unet.config))
-        OmegaConf.update(config, "unet_config", unet_config)
-
-        OmegaConf.update(
-            config.projection_config,
-            "cross_atttention_dim",
-            unet.config.cross_attention_dim,
-        )
+        cls, unet: UNet2DConditionModel, config: DictConfig, bind_unet: bool = True
+    ):
+        # set cross attention dimension for projection configs
+        for proj_conf in config.projection_configs.values():
+            OmegaConf.update(
+                proj_conf, "cross_attention_dim", unet.config.cross_attention_dim
+            )
 
         model = cls(config)
 
-        attn_processor_dict = model._process_unet(unet, load_weights=True)
+        attn_processor_dict = model._process_unet(
+            unet, load_weights=True
+        )
 
         adapter_modules = nn.ModuleList(attn_processor_dict.values())
 
         model.adapter_modules = adapter_modules
 
-        bind_unet = bind_unet if bind_unet is not None else True
         if bind_unet:
             unet.set_attn_processor(attn_processor_dict)
+
+        return model
+
+    @override
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
+    ) -> PreTrainedModel:
+        """
+        Note that after loading from a pretrained file, this model is NOT bound with the given unet.
+        You need to bind the it with the unet before using the model.
+        """
+        config = cls.load_config(pretrained_model_path, config)
+
+        unet = UNet2DConditionModel.from_pretrained(
+            config.diffusion_model_path, subfolder="unet"
+        )
+
+        model = cls.from_unet(unet, config, bind_unet=False)
+
+        model_path = os.path.join(pretrained_model_path, "pytorch_model.bin")
+        model.load_state_dict(copy.deepcopy(torch.load(model_path, map_location="cpu")))
+
+        model.eval()
 
         return model
 
