@@ -30,11 +30,8 @@ class EEGProcessor:
         self.dtype = dtype if dtype is not None else torch.float32
 
     def __call__(
-        self, eeg_values: torch.Tensor, return_batches: Optional[bool] = None, **kwargs
+        self, eeg_values: torch.FloatTensor, return_batches: bool = True, **kwargs
     ) -> torch.Tensor:
-        return_batches = (
-            return_batches if return_batches is not None else True
-        )  # default to return in batch form
 
         if eeg_values.ndim == 2:
             result = eeg_values[:, self._time_low : self._time_high]
@@ -172,10 +169,11 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
 
         data = {
             "pixel_values": pixel_values,
+            "image_indexes": item["image"],
             "vision_condition": eeg_inputs,
             "text_condition": eeg_inputs,
             "vision_drop": drop[0],
-            "text_drop": drop[1]
+            "text_drop": drop[1],
         }
 
         if self.mode == "val" or self.mode == "test":
@@ -250,6 +248,7 @@ class ImageTextDataset(Dataset):
 
         data = {
             "pixel_values": diffusion_pixel_values,
+            "image_indexes": index,
             "vision_condition": clip_pixel_values.squeeze(dim=0),
             "text_condition": input_ids.squeeze(dim=0),
             "vision_drop": drop[0],

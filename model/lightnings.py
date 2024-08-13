@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Union
+from typing import Dict, Union, Optional
 from typing_extensions import override
 
 import torch
@@ -115,7 +115,9 @@ class LitBrainStudentModel(LitBaseModel):
         )
         eeg_embeds = self.model(eeg_values)
 
-        loss = nn.functional.mse_loss(eeg_embeds, teacher_embeds)
+        loss = 1 - nn.functional.cosine_similarity(
+            eeg_embeds, teacher_embeds, dim=-1
+        ).mean(dim=-1)
 
         return {
             "eeg_embeds": eeg_embeds,
@@ -194,25 +196,18 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="scheduler"
         )
 
-        self.condition_encoders: Dict[
-            str,
-            Union[
-                VisionModelWithProjection,
-                EncoderModelWithProjection,
-                TextModelWithProjection,
-            ],
-        ] = {
-            name: get_class(encoder_config.name).from_pretrained(
-                encoder_config.pretrained_model_path
-            )
-            for name, encoder_config in config.lightning.condition_encoders.items()
-        }
+        self.condition_encoders = nn.ModuleDict(
+            {
+                name: get_class(encoder_config.name).from_pretrained(
+                    encoder_config.pretrained_model_path
+                )
+                for name, encoder_config in config.lightning.condition_encoders.items()
+            }
+        )
 
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
-
-        for encoder in self.condition_encoders.values():
-            encoder.requires_grad_(False)
+        self.condition_encoders.requires_grad_(False)
 
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
@@ -265,7 +260,7 @@ class LitAdapterModel(LitBaseModel):
                 cond_embeds_.append(
                     torch.where(drop, torch.zeros_like(cond_embed), cond_embed)
                 )
-            
+
             cond_embeds_dict[key] = torch.stack(cond_embeds_, dim=0)
 
         cond_embeds = self.model(cond_embeds_dict)
@@ -302,9 +297,14 @@ class LitAdapterModel(LitBaseModel):
 
         return {"loss": loss}
 
-    @override
-    @rank_zero_only
-    def validation_step(self, batch, batch_idx) -> torch.Tensor:
+    def generate(
+        self,
+        batch,
+        seed: Optional[int] = None,
+        num_inference_steps: Optional[int] = None,
+        num_images_per_prompt: Optional[int] = None,
+        **kwargs,
+    ):
         pipeline = AdapterPipeline(
             StableDiffusionPipeline.from_pretrained(
                 self.diffusion_model_path,
@@ -315,29 +315,41 @@ class LitAdapterModel(LitBaseModel):
             device=self.device,
             dtype=self.dtype,
         )
+        # For each adapter and condition encoder
+        cond_embeds = {}
+        uncond_embeds = {}
+        for key, encoder in self.condition_encoders.items():
+            cond_inputs = batch["_".join([key, "condition"])]
+            with torch.inference_mode():
+                cond_embeds[key] = encoder(cond_inputs)
+            uncond_embeds[key] = torch.zeros_like(cond_embeds[key])
 
-        cond_inputs, ground_truth = (
-            batch["condition_inputs"],
-            batch["ground_truth"],
-        )
         with torch.inference_mode():
-            embeds = self.condition_encoders(cond_inputs)
+            cond_embeds = self.model(cond_embeds)
+            uncond_embeds = self.model(uncond_embeds)
 
-            cond_embeds = self.model(embeds)
-            uncond_embeds = self.model(torch.zeros_like(embeds))
-
-        seed = self.config.trainer.get("seed", None)
-        num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
-
-        images: torch.Tensor = pipeline.generate(
+        images = pipeline.generate(
             cond_embeds=cond_embeds,
             uncond_embeds=uncond_embeds,
             seed=seed,
             num_inference_steps=num_inference_steps,
-            output_type="pt",
+            num_images_per_prompt=num_images_per_prompt,
+            **kwargs,
+        )
+
+        return images
+
+    @override
+    @rank_zero_only
+    def validation_step(self, batch, batch_idx) -> torch.Tensor:
+        seed = self.config.trainer.get("seed", None)
+        num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
+
+        images: torch.Tensor = self.generate(
+            batch, seed, num_inference_steps, output_type="pt"
         )
         images = images.cpu()
-        ground_truth = ground_truth.cpu()
+        ground_truth = batch["ground_truth"].cpu()
 
         image_grid = torchvision.utils.make_grid(
             torch.cat([ground_truth, images], dim=0), nrow=images.shape[0], padding=4
@@ -351,39 +363,16 @@ class LitAdapterModel(LitBaseModel):
     @override
     @rank_zero_only
     def test_step(self, batch, batch_idx):
-        pipeline = AdapterPipeline(
-            StableDiffusionPipeline.from_pretrained(
-                self.diffusion_model_path,
-                unet=self.unet,
-                vae=self.vae,
-                safety_checker=None,
-            ),
-            device=self.device,
-            dtype=self.dtype,
-        )
-
-        cond_inputs, image_indexes = (
-            batch["condition_inputs"],
-            batch["image_indexes"],
-        )
-        with torch.inference_mode():
-            embeds = self.condition_encoders(cond_inputs)
-
-            cond_embeds = self.model(embeds)
-            uncond_embeds = self.model(torch.zeros_like(embeds))
-
         # parameters for generation process
         num_images_per_prompt = self.config.lightning.get("num_images_per_prompt", None)
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
+        batch_size = self.config.dataset.batch_size
 
-        images: torch.Tensor = pipeline.generate(
-            cond_embeds=cond_embeds,
-            uncond_embeds=uncond_embeds,
-            num_images_per_prompt=num_images_per_prompt,
-            num_inference_steps=num_inference_steps,
-            seed=seed,
+        images: Image.Image = self.generate(
+            batch, seed, num_inference_steps, num_images_per_prompt
         )
+        image_indexes = batch["image_indexes"]
 
         save_dir = self.logger.save_dir
         if save_dir is not None:
@@ -391,7 +380,7 @@ class LitAdapterModel(LitBaseModel):
             if not os.path.exists(save_directory):
                 os.makedirs(save_directory)
             # save generated images
-            for i in range(len(cond_inputs)):
+            for i in range(batch_size):
                 for j in range(num_images_per_prompt):
                     image: Image = images[i * num_images_per_prompt + j]
                     save_path = os.path.join(

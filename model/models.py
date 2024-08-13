@@ -9,6 +9,7 @@ from torch import nn
 from diffusers import UNet2DConditionModel, StableDiffusionPipeline
 from transformers import (
     CLIPImageProcessor,
+    CLIPTokenizer,
     CLIPVisionModelWithProjection,
     CLIPTextModelWithProjection,
 )
@@ -214,9 +215,7 @@ class VisionModelWithProjection(PreTrainedModel):
 class TextModelWithProjection(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.text_model = CLIPTextModelWithProjection.from_pretrained(
-            config.model_path
-        )
+        self.text_model = CLIPTextModelWithProjection.from_pretrained(config.model_path)
 
     def forward(
         self,
@@ -284,12 +283,11 @@ class AdapterModel(PreTrainedModel):
     def _process_unet(
         self,
         unet: UNet2DConditionModel,
-        load_weights: Optional[bool] = None,
+        load_weights: bool = False,
     ) -> Dict[str, nn.Module]:
         """
         Get attention processor dict of the given unet and replace processors
         """
-        load_weights = load_weights if load_weights is not None else False
 
         attn_procs = {}
         for name in unet.attn_processors.keys():
@@ -340,12 +338,6 @@ class AdapterModel(PreTrainedModel):
 
         return model_outputs
 
-    def bind_unet(self, unet: UNet2DConditionModel):
-        unet.set_attn_processor(self._processor_dict)
-
-        adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
-        adapter_modules.load_state_dict(self.adapter_modules.state_dict())
-
     @classmethod
     def from_unet(
         cls, unet: UNet2DConditionModel, config: DictConfig, bind_unet: bool = True
@@ -358,9 +350,7 @@ class AdapterModel(PreTrainedModel):
 
         model = cls(config)
 
-        attn_processor_dict = model._process_unet(
-            unet, load_weights=True
-        )
+        attn_processor_dict = model._process_unet(unet, load_weights=True)
 
         adapter_modules = nn.ModuleList(attn_processor_dict.values())
 
@@ -370,6 +360,12 @@ class AdapterModel(PreTrainedModel):
             unet.set_attn_processor(attn_processor_dict)
 
         return model
+
+    def bind_unet(self, unet: UNet2DConditionModel):
+        unet.set_attn_processor(self._process_unet(unet))
+
+        adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
+        adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
     @override
     @classmethod
@@ -396,15 +392,16 @@ class AdapterModel(PreTrainedModel):
         return model
 
 
+# TODO
 class AdapterPipeline:
     def __init__(
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
-        condition_model: Optional[
-            Union[EncoderModelWithProjection, VisionModelWithProjection]
-        ] = None,
+        condition_models: Optional[nn.ModuleDict] = None,
         adapter_model: Optional[AdapterModel] = None,
-        processor: Optional[Union[EEGProcessor, CLIPImageProcessor]] = None,
+        processors: Optional[
+            Dict[str, Union[EEGProcessor, CLIPImageProcessor, CLIPTokenizer]]
+        ] = None,
         device: Union[str, torch.device, None] = None,
         dtype: Optional[torch.dtype] = None,
     ):
@@ -415,57 +412,102 @@ class AdapterPipeline:
         self.dtype = dtype if dtype is not None else torch.float16
 
         self.pipeline = stable_diffusion_pipeline
-        self.condition_model = condition_model
+        self.condition_models = condition_models
         self.adapter_model = adapter_model
 
-        self.processor = processor
+        self.processors = processors
 
         if self.adapter_model is not None:
             self.adapter_model.bind_unet(self.pipeline.unet)
 
     def process_inputs(
-        self, cond_inputs: Union[torch.Tensor, Image.Image, List[Image.Image]]
-    ):
-        if isinstance(self.processor, CLIPImageProcessor):
-            return self.processor(cond_inputs, return_tensors="pt").pixel_values
-        elif isinstance(self.processor, EEGProcessor):
-            return self.processor(cond_inputs)
+        self,
+        cond_key: str,
+        cond_inputs: Union[
+            torch.FloatTensor, Image.Image, List[Image.Image], str, List[str]
+        ],
+    ) -> torch.Tensor:
+        processor = self.processors[cond_key]
+
+        processed_inputs = None
+        if isinstance(processor, CLIPImageProcessor):
+            assert isinstance(
+                cond_inputs, (Image.Image, List[Image.Image])
+            ), f"Expect (Image.Image, List[Image.Image]), got {type(cond_inputs)}"
+            processed_inputs = processor(cond_inputs, return_tensors="pt").pixel_values
+
+        elif isinstance(processor, CLIPTokenizer):
+            assert isinstance(
+                cond_inputs, (str, List[str])
+            ), f"Expect (str, List[str]), got {type(cond_inputs)}"
+            processed_inputs = processor(
+                cond_inputs,
+                padding="max_length",
+                max_length=processor.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            ).input_ids
+        elif isinstance(processor, EEGProcessor):
+            assert isinstance(
+                cond_inputs, torch.FloatTensor
+            ), f"Expect (torch.FloatTensor), got {type(cond_inputs)}"
+            processed_inputs = processor(cond_inputs)
         else:
-            raise ValueError(f"Invalid processor type [{type(self.processor)}]")
+            raise ValueError(f"Unrecognizable processor type {type(processor)}")
+
+        return processed_inputs
 
     @torch.inference_mode()
     def get_encoder_embeds(
-        self, cond_inputs: Union[torch.Tensor, Image.Image, List[Image.Image]]
-    ) -> Tuple[torch.Tensor]:
+        self,
+        cond_inputs: Dict[
+            str,
+            Union[torch.FloatTensor, Image.Image, List[Image.Image], str, List[str]],
+        ],
+    ) -> Tuple[str, Dict[str, torch.Tensor]]:
         assert cond_inputs is not None, "cond_inputs cannot be None"
+
         assert (
-            self.processor is not None
+            self.processors is not None
         ), "Got condition inputs but the processor is None"
 
-        cond_tensors: torch.Tensor = self.process_inputs(cond_inputs).to(
-            self.device, self.dtype
-        )
         assert (
-            self.condition_model is not None
+            self.condition_models is not None
         ), "Got condition inputs but the condition model is None"
-        embeds = self.condition_model(cond_tensors)
 
         assert (
             self.adapter_model is not None
         ), "Got condition inputs but the adapter model is None"
-        cond_embeds = self.adapter_model(embeds)
 
-        uncond_embeds = self.adapter_model(torch.zeros_like(embeds))
+        cond_embeds = {}
+        uncond_embeds = {}
+
+        for cond_key, cond in cond_inputs.items():
+            cond_tensors: torch.Tensor = self.process_inputs(cond_key, cond).to(
+                self.device, self.dtype
+            )
+
+            cond_model = self.condition_models[cond_key]
+            cond_embeds[cond_key] = cond_model(cond_tensors)
+            uncond_embeds[cond_key] = torch.zeros_like(cond_embeds[cond_key])
+
+        uncond_embeds = self.adapter_model(uncond_embeds)
+        cond_embeds = self.adapter_model(cond_embeds)
 
         return cond_embeds, uncond_embeds
 
     def generate(
         self,
         cond_inputs: Optional[
-            Union[torch.Tensor, Image.Image, List[Image.Image]]
+            Dict[
+                str,
+                Union[
+                    torch.FloatTensor, Image.Image, List[Image.Image], str, List[str]
+                ],
+            ]
         ] = None,
-        cond_embeds: Optional[torch.Tensor] = None,
-        uncond_embeds: Optional[torch.Tensor] = None,
+        cond_embeds: Optional[Dict[str, torch.Tensor]] = None,
+        uncond_embeds: Optional[Dict[str, torch.Tensor]] = None,
         num_images_per_prompt: Optional[int] = None,
         seed: Optional[int] = None,
         guidance_scale: Optional[float] = None,
@@ -473,13 +515,19 @@ class AdapterPipeline:
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        if self.condition_model is not None and self.adapter_model is not None:
-            self.condition_model.to(self.device, self.dtype)
+        if self.condition_models is not None and self.adapter_model is not None:
+            self.condition_models.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
 
         if cond_embeds is not None and uncond_embeds is not None:
-            cond_embeds = cond_embeds.to(self.device, self.dtype)
-            uncond_embeds = uncond_embeds.to(self.device, self.dtype)
+            cond_embeds = {
+                key: cond.to(self.device, self.dtype)
+                for key, cond in cond_embeds.items()
+            }
+            uncond_embeds = {
+                key: uncond.to(self.device, self.dtype)
+                for key, uncond in uncond_embeds.items()
+            }
         elif cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
         elif cond_embeds is not None and uncond_embeds is None:
@@ -491,14 +539,20 @@ class AdapterPipeline:
             num_images_per_prompt if num_images_per_prompt is not None else 1
         )
 
-        bs_embed, seq_len, _ = cond_embeds.shape
-        cond_embeds = cond_embeds.repeat(1, num_images_per_prompt, 1)
-        cond_embeds = cond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+        for key in cond_embeds.keys():
+            cond = cond_embeds[key]
+            uncond = uncond_embeds[key]
 
-        uncond_embeds = uncond_embeds.repeat(1, num_images_per_prompt, 1)
-        uncond_embeds = uncond_embeds.view(
-            bs_embed * num_images_per_prompt, seq_len, -1
-        )
+            bs_embed, seq_len, _ = cond.shape
+
+            cond = cond.repeat(1, num_images_per_prompt, 1)
+            cond = cond.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
+            uncond = uncond.repeat(1, num_images_per_prompt, 1)
+            uncond = uncond.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
+            cond_embeds[key] = cond
+            uncond_embeds[key] = uncond
 
         generator = get_generator(seed, device=self.device)
 
