@@ -918,7 +918,7 @@ class MixedAttnProcessor(nn.Module):
 
         for adapter_name, adapter_hidden_states in encoder_hidden_states.items():
             to_key = self.to_key[adapter_name]
-            to_value = self.to_value(adapter_name)
+            to_value = self.to_value[adapter_name]
 
             key = to_key(adapter_hidden_states)
             value = to_value(adapter_hidden_states)
