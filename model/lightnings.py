@@ -367,14 +367,15 @@ class LitAdapterModel(LitBaseModel):
         num_images_per_prompt = self.config.lightning.get("num_images_per_prompt", None)
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
+        
         batch_size = self.config.dataset.batch_size
+        save_dir = self.logger.save_dir
 
         images: Image.Image = self.generate(
             batch, seed, num_inference_steps, num_images_per_prompt
         )
         image_indexes = batch["image_indexes"]
 
-        save_dir = self.logger.save_dir
         if save_dir is not None:
             save_directory = os.path.join(save_dir, "images")
             if not os.path.exists(save_directory):
