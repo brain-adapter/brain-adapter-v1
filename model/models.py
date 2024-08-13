@@ -367,6 +367,8 @@ class AdapterModel(PreTrainedModel):
         adapter_modules = torch.nn.ModuleList(unet.attn_processors.values())
         adapter_modules.load_state_dict(self.adapter_modules.state_dict())
 
+        self.adapter_modules = adapter_modules
+
     @override
     @classmethod
     def from_pretrained(
@@ -392,7 +394,6 @@ class AdapterModel(PreTrainedModel):
         return model
 
 
-# TODO
 class AdapterPipeline:
     def __init__(
         self,
