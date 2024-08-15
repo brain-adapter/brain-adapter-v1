@@ -2,3 +2,5 @@
 .vscode/
 __pycache__/
 imagenet2captions.py
+test.py
+downloader.sh

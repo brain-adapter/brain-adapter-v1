@@ -2,11 +2,8 @@ import os
 from tqdm import tqdm
 from pathlib2 import Path
 from argparse import ArgumentParser, Namespace
-import random
-import shutil
 
 import torch
-import pandas
 import lightning
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
@@ -90,45 +87,6 @@ def create_embeds(
         torch.mps.empty_cache()
 
 
-def create_val_meta(
-    data_root_path: str, num_images_per_class: int = 4, save_dir_path: str = ""
-):
-    """
-    For Validation process of Training Vision Adapter
-    """
-    image_meta = torch.load(os.path.join(data_root_path, "eeg_5_95_std.pth"))["images"]
-    label_meta = torch.load(os.path.join(data_root_path, "eeg_5_95_std.pth"))["labels"]
-
-    if not os.path.exists(save_dir_path):
-        os.makedirs(save_dir_path)
-    image_directory = os.path.join(save_dir_path, "images")
-    if not os.path.exists(image_directory):
-        os.makedirs(image_directory)
-
-    metadata_val = []
-    for label in tqdm(label_meta, desc="Creating validation data..."):
-        image_columns = [image for image in image_meta if image.startswith(label)]
-        image_columns = random.sample(image_columns, k=num_images_per_class)
-
-        for image in image_columns:
-            image_file = ".".join([image, "JPEG"])
-            image_src = os.path.join(data_root_path, "images", label, image_file)
-            image_dst = os.path.join(save_dir_path, "images", image_file)
-            shutil.copy(image_src, image_dst)
-
-            metadata_val.append(
-                {
-                    "local_file": image_file,
-                    "caption": "",  # do not need caption
-                }
-            )
-
-    # save validaion meta file
-    pandas.DataFrame(metadata_val).to_parquet(
-        os.path.join(save_dir_path, "meta-val.parquet"), engine="pyarrow"
-    )
-
-
 def main(args: Namespace):
     lightning.seed_everything(args.seed)
 
@@ -139,10 +97,6 @@ def main(args: Namespace):
             save_dir_path=args.embeds_file_path,
             version=Path(model_path).stem,
         )
-
-    # create_val_meta(
-    #     data_root_path=args.data_root_path, save_dir_path=args.validation_directory
-    # )
 
 
 if __name__ == "__main__":

@@ -265,15 +265,12 @@ class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        proj_dict = {}
-        num_tokens = {}
+        self.projections = nn.ModuleList([])
+        self.token_bounds = ()
 
-        for key, proj_conf in config.projection_configs.items():
-            proj_dict[key] = AdapterProjection(proj_conf)
-            num_tokens[key] = proj_conf.num_tokens
-
-        self.projections = nn.ModuleDict(proj_dict)
-        self.num_tokens = num_tokens
+        for proj_conf in config.projection_configs:
+            self.projections.append(AdapterProjection(proj_conf))
+            self.token_bounds = self.token_bounds + (tuple(proj_conf.token_bounds),)
 
         # init this model using method `from_unet`
         self.adapter_modules = None
@@ -308,7 +305,7 @@ class AdapterModel(PreTrainedModel):
                 attn_procs[name] = AttnProcessor()
             else:
                 attn_procs[name] = MixedAttnProcessor(
-                    hidden_size, cross_attention_dim, num_tokens=self.num_tokens
+                    hidden_size, cross_attention_dim, token_bounds=self.token_bounds
                 )
                 if load_weights:
                     unet_sd = unet.state_dict()
@@ -316,11 +313,11 @@ class AdapterModel(PreTrainedModel):
 
                     # format weights
                     weights = {}
-                    for adapter_name in self.num_tokens.keys():
-                        weights[f"to_key.{adapter_name}.weight"] = copy.deepcopy(
+                    for i in range(len(self.projections)):
+                        weights[f"to_key.{i}.weight"] = copy.deepcopy(
                             unet_sd[layer_name + ".to_k.weight"]
                         )
-                        weights[f"to_value.{adapter_name}.weight"] = copy.deepcopy(
+                        weights[f"to_value.{i}.weight"] = copy.deepcopy(
                             unet_sd[layer_name + ".to_v.weight"]
                         )
 
@@ -328,22 +325,20 @@ class AdapterModel(PreTrainedModel):
 
         return attn_procs
 
-    def forward(
-        self, cond_embeds: Dict[str, torch.FloatTensor]
-    ) -> Dict[str, torch.FloatTensor]:
-        model_outputs = {}
-        for key, embeds in cond_embeds.items():
-            projection = self.projections[key]
-            model_outputs[key] = projection(embeds)
+    def forward(self, cond_embeds: Tuple[torch.Tensor]) -> torch.Tensor:
+        adapter_outputs = []
+        for embeds, proj in zip(cond_embeds, self.projections):
+            adapter_outputs.append(proj(embeds))
 
-        return model_outputs
+        adapter_outputs = torch.cat(adapter_outputs, dim=1)
+        return adapter_outputs
 
     @classmethod
     def from_unet(
         cls, unet: UNet2DConditionModel, config: DictConfig, bind_unet: bool = True
     ):
         # set cross attention dimension for projection configs
-        for proj_conf in config.projection_configs.values():
+        for proj_conf in config.projection_configs:
             OmegaConf.update(
                 proj_conf, "cross_attention_dim", unet.config.cross_attention_dim
             )
@@ -398,10 +393,10 @@ class AdapterPipeline:
     def __init__(
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
-        condition_models: Optional[nn.ModuleDict] = None,
+        condition_models: Optional[nn.ModuleList] = None,
         adapter_model: Optional[AdapterModel] = None,
         processors: Optional[
-            Dict[str, Union[EEGProcessor, CLIPImageProcessor, CLIPTokenizer]]
+            Tuple[Union[EEGProcessor, CLIPImageProcessor, CLIPTokenizer]]
         ] = None,
         device: Union[str, torch.device, None] = None,
         dtype: Optional[torch.dtype] = None,
@@ -423,13 +418,11 @@ class AdapterPipeline:
 
     def process_inputs(
         self,
-        cond_key: str,
+        processor: Union[EEGProcessor, CLIPImageProcessor, CLIPTokenizer],
         cond_inputs: Union[
             torch.FloatTensor, Image.Image, List[Image.Image], str, List[str]
         ],
     ) -> torch.Tensor:
-        processor = self.processors[cond_key]
-
         processed_inputs = None
         if isinstance(processor, CLIPImageProcessor):
             assert isinstance(
@@ -461,11 +454,10 @@ class AdapterPipeline:
     @torch.inference_mode()
     def get_encoder_embeds(
         self,
-        cond_inputs: Dict[
-            str,
-            Union[torch.FloatTensor, Image.Image, List[Image.Image], str, List[str]],
+        cond_inputs: Tuple[
+            Union[torch.FloatTensor, Image.Image, List[Image.Image], str, List[str]]
         ],
-    ) -> Tuple[str, Dict[str, torch.Tensor]]:
+    ) -> Tuple[torch.Tensor]:
         assert cond_inputs is not None, "cond_inputs cannot be None"
 
         assert (
@@ -480,17 +472,18 @@ class AdapterPipeline:
             self.adapter_model is not None
         ), "Got condition inputs but the adapter model is None"
 
-        cond_embeds = {}
-        uncond_embeds = {}
+        cond_embeds = ()
+        uncond_embeds = ()
 
-        for cond_key, cond in cond_inputs.items():
-            cond_tensors: torch.Tensor = self.process_inputs(cond_key, cond).to(
-                self.device, self.dtype
-            )
+        for condition, processor, cond_model in zip(
+            cond_inputs, self.processors, self.condition_models
+        ):
+            cond_tensors: torch.Tensor = self.process_inputs(processor, condition)
+            
+            model_embeds = cond_model(cond_tensors)
 
-            cond_model = self.condition_models[cond_key]
-            cond_embeds[cond_key] = cond_model(cond_tensors)
-            uncond_embeds[cond_key] = torch.zeros_like(cond_embeds[cond_key])
+            cond_embeds = cond_embeds + (model_embeds, )
+            uncond_embeds = uncond_embeds + (torch.zeros_like(model_embeds))
 
         uncond_embeds = self.adapter_model(uncond_embeds)
         cond_embeds = self.adapter_model(cond_embeds)
@@ -507,8 +500,8 @@ class AdapterPipeline:
                 ],
             ]
         ] = None,
-        cond_embeds: Optional[Dict[str, torch.Tensor]] = None,
-        uncond_embeds: Optional[Dict[str, torch.Tensor]] = None,
+        cond_embeds: Optional[torch.Tensor] = None,
+        uncond_embeds: Optional[torch.Tensor] = None,
         num_images_per_prompt: Optional[int] = None,
         seed: Optional[int] = None,
         guidance_scale: Optional[float] = None,
@@ -521,14 +514,8 @@ class AdapterPipeline:
             self.adapter_model.to(self.device, self.dtype)
 
         if cond_embeds is not None and uncond_embeds is not None:
-            cond_embeds = {
-                key: cond.to(self.device, self.dtype)
-                for key, cond in cond_embeds.items()
-            }
-            uncond_embeds = {
-                key: uncond.to(self.device, self.dtype)
-                for key, uncond in uncond_embeds.items()
-            }
+            cond_embeds = cond_embeds.to(self.device, self.dtype)
+            uncond_embeds = uncond_embeds.to(self.device, self.dtype)
         elif cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
         elif cond_embeds is not None and uncond_embeds is None:
@@ -540,20 +527,13 @@ class AdapterPipeline:
             num_images_per_prompt if num_images_per_prompt is not None else 1
         )
 
-        for key in cond_embeds.keys():
-            cond = cond_embeds[key]
-            uncond = uncond_embeds[key]
+        bs_embed, seq_len, _ = cond_embeds.shape
 
-            bs_embed, seq_len, _ = cond.shape
+        cond_embeds = cond_embeds.repeat(1, num_images_per_prompt, 1)
+        cond_embeds = cond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
 
-            cond = cond.repeat(1, num_images_per_prompt, 1)
-            cond = cond.view(bs_embed * num_images_per_prompt, seq_len, -1)
-
-            uncond = uncond.repeat(1, num_images_per_prompt, 1)
-            uncond = uncond.view(bs_embed * num_images_per_prompt, seq_len, -1)
-
-            cond_embeds[key] = cond
-            uncond_embeds[key] = uncond
+        uncond_embeds = uncond_embeds.repeat(1, num_images_per_prompt, 1)
+        uncond_embeds = uncond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
 
         generator = get_generator(seed, device=self.device)
 

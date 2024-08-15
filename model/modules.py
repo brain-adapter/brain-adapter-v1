@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Type, Dict
+from typing import Optional, Tuple, Type
 import torch
 from torch import nn
 from omegaconf import DictConfig
@@ -458,7 +458,7 @@ class VisionPerceiver(nn.Module):
 class AdapterProjection(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.num_tokens = config.num_tokens
+        self.num_tokens: int = config.token_bounds[1] - config.token_bounds[0]
         self.cross_attention_dim = config.cross_attention_dim
         self.input_dim = config.input_dim
 
@@ -851,7 +851,7 @@ class MixedAttnProcessor(nn.Module):
         self,
         hidden_size: int,
         cross_attention_dim: int,
-        num_tokens: Dict,
+        token_bounds: Tuple[Tuple[int]],
     ):
         super().__init__()
 
@@ -860,30 +860,30 @@ class MixedAttnProcessor(nn.Module):
                 f"{self.__class__.__name__} requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
 
-        self.num_tokens = num_tokens
+        self.token_bounds = token_bounds
 
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
 
-        self.to_key = nn.ModuleDict(
-            {
-                key: nn.Linear(cross_attention_dim, hidden_size, bias=False)
-                for key in num_tokens.keys()
-            }
+        self.to_key = nn.ModuleList(
+            [
+                nn.Linear(cross_attention_dim, hidden_size, bias=False)
+                for _ in range(len(token_bounds))
+            ]
         )
 
-        self.to_value = nn.ModuleDict(
-            {
-                key: nn.Linear(cross_attention_dim, hidden_size, bias=False)
-                for key in num_tokens.keys()
-            }
+        self.to_value = nn.ModuleList(
+            [
+                nn.Linear(cross_attention_dim, hidden_size, bias=False)
+                for _ in range(len(token_bounds))
+            ]
         )
 
     def __call__(
         self,
         attn: Attention,
         hidden_states: torch.FloatTensor,
-        encoder_hidden_states: Dict[str, torch.FloatTensor],
+        encoder_hidden_states: torch.FloatTensor,
         attention_mask: Optional[torch.FloatTensor] = None,
         temb: Optional[torch.FloatTensor] = None,
     ):
@@ -909,19 +909,21 @@ class MixedAttnProcessor(nn.Module):
 
         query = attn.to_q(hidden_states)
 
-        inner_dim = key.shape[-1]
-        head_dim = inner_dim // attn.heads
+        head_dim = self.hidden_size // attn.heads
 
         query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         hidden_states = 0.0
 
-        for adapter_name, adapter_hidden_states in encoder_hidden_states.items():
-            to_key = self.to_key[adapter_name]
-            to_value = self.to_value[adapter_name]
+        for to_key, to_value, token_bounds in zip(
+            self.to_key, self.to_value, self.token_bounds
+        ):
+            adapter_hidden_states = encoder_hidden_states[
+                :, token_bounds[0] : token_bounds[1], :
+            ]
 
-            key = to_key(adapter_hidden_states)
-            value = to_value(adapter_hidden_states)
+            key:torch.Tensor = to_key(adapter_hidden_states)
+            value:torch.Tensor = to_value(adapter_hidden_states)
 
             key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
             value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)

@@ -10,7 +10,7 @@ trainer:
     dirpath: /root/autodl-tmp/ckpts
     monitor: step
     filename: lit-{step}
-    save_top_k: 2
+    save_top_k: 1
     mode: max
     every_n_train_steps: 10000
     save_last: false
@@ -19,23 +19,23 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: vision-adapter
+    name: mixed-adapter
     version: 0
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitAdapterModel
-  diffusion_model_path: &diffusion_model_path /Users/zhengjiawen/Desktop/models/stable-diffusion-v1-5 #/root/autodl-tmp/pretrained/stable-diffusion-v1-5
+  diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
   snr_gamma: 5.0
   num_images_per_prompt: 4
   num_inference_steps: 30
 
   condition_encoders:
-    vision:
+    - key: vision
       name: model.models.VisionModelWithProjection
       pretrained_model_path: /root/autodl-tmp/pretrained/clip-model
     
-    text:
+    - key: text
       name: model.models.TextModelWithProjection
       pretrained_model_path: /root/autodl-tmp/pretrained/clip-model
 
@@ -43,29 +43,37 @@ model:
   diffusion_model_path: *diffusion_model_path
 
   projection_configs:
-    vision:
+    - key: vision
       input_dim: 768
-      num_tokens: 4
-    
-    text:
+      token_bounds:
+        - 0
+        - 4
+
+    - key: text
       input_dim: 768
-      num_tokens: 4
+      token_bounds:
+        - 4
+        - 8
 
 dataset: 
-  name: data.dataset.ImageTextDataset
+  name: data.dataset.ImageNetDataset
   num_workers: 4 # num_devices * 4
   resolution: 512
   batch_size: 8
 
   meta_files:
-    train: /root/autodl-tmp/data/ada10m-en/train/meta-train.parquet
-    val: /root/autodl-tmp/data/ada10m-en/validation/meta-val.parquet
+    train: /root/autodl-tmp/data/imagenet-1k/meta-train.json
+    val: /root/autodl-tmp/data/imagenet-1k/meta-validation.json
 
   image_root_path: 
-    train: /root/autodl-tmp/data/ada10m-en/train/images
-    val: /root/autodl-tmp/data/ada10m-en/validation/images
+    train: /root/autodl-tmp/data/imagenet-1k/images/train
+    val: /root/autodl-tmp/data/imagenet-1k/images/validation
+
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
   diffusion_model_path: *diffusion_model_path
+
+  text_drop_prob: 0.05
+  image_drop_prob: 0.05
 
 # constant learning rate
 optimizer:

@@ -7,7 +7,6 @@ import torch
 from torch.utils.data import Dataset
 from omegaconf import DictConfig
 from PIL import Image
-import pandas
 from transformers import CLIPImageProcessor, CLIPTokenizer, ViTImageProcessor
 from torchvision import transforms
 
@@ -183,132 +182,98 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         return data
 
 
-class ImageTextDataset(Dataset):
+class ImageNetDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig):
         super().__init__()
         self.config = config
-        self.image_root_path = config.image_root_path[mode]
-        self.resolution = config.get("resolution", 512)
-        self.mode = mode
 
-        self.meta: pandas.DataFrame = pandas.read_parquet(
-            config.meta_files[mode], engine="pyarrow"
+        self.image_root_path = config.image_root_path[mode]
+        self.mode = mode
+        self.resolution = config.resolution
+
+        with open(config.meta_files[mode], "r") as f:
+            self.meta = json.load(f)
+
+        self.vae_processor = (
+            transforms.Compose(
+                [
+                    transforms.Resize(
+                        config.resolution,
+                        interpolation=transforms.InterpolationMode.BILINEAR,
+                    ),
+                    transforms.CenterCrop(self.resolution),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5]),
+                ]
+            )
+            if mode == "train"
+            else None
         )
-        self.diffusion_processor = transforms.Compose(
-            [
-                transforms.Resize(
-                    config.resolution,
-                    interpolation=transforms.InterpolationMode.BILINEAR,
-                ),
-                transforms.CenterCrop(self.resolution),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
+
+        self.vis_cond_processor = CLIPImageProcessor.from_pretrained(
+            config.clip_model_path
         )
-        self.clip_processor = CLIPImageProcessor.from_pretrained(config.clip_model_path)
-        self.text_processor: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-            config.diffusion_model_path, subfolder="tokenizer"
+
+        self.text_cond_processor: CLIPTokenizer = CLIPTokenizer.from_pretrained(
+            config.clip_model_path
         )
 
         # handle drop to enhance classifier-free guidance
-        self.text_drop_prob = config.get("text_drop_prob", 0.1)
-        self.image_drop_prob = config.get("image_drop_prob", 0.05)
+        self.text_drop_prob = config.get("text_drop_prob", None)
+        self.vision_drop_prob = config.get("image_drop_prob", None)
 
     def __len__(self):
         return len(self.meta)
 
     def __getitem__(self, index) -> Dict:
-        image_path = os.path.join(
-            self.image_root_path, self.meta.iloc[index]["local_file"]
-        )
+        image_name: str = self.meta[index]["image"]
+        image_folder = image_name.split("_")[0]
+        image_path = os.path.join(self.image_root_path, image_folder, image_name)
         raw_image = Image.open(image_path).convert("RGB")
 
-        clip_pixel_values: torch.Tensor = self.clip_processor(
-            images=raw_image, return_tensors="pt"
-        ).pixel_values
+        # for vae encoder
+        pixel_values = self.vae_processor(raw_image) if self.mode == "train" else None
 
-        diffusion_pixel_values = self.diffusion_processor(raw_image)
-        ground_truth: Union[torch.Tensor, None] = (
+        # for inference
+        ground_truth: Union[torch.FloatTensor, None] = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
             if self.mode == "val" or self.mode == "test"
             else None
         )
 
-        drop = torch.rand(2) < torch.tensor([self.image_drop_prob, self.text_drop_prob])
+        # for vision adapter
+        vision_condition: torch.FloatTensor = self.vis_cond_processor(
+            images=raw_image, return_tensors="pt"
+        ).pixel_values
 
-        text = self.meta.iloc[index]["caption"]
-
-        input_ids: torch.Tensor = self.text_processor(
+        # for text adapter
+        text = self.meta[index]["caption"]
+        text_condition: torch.Tensor = self.text_cond_processor(
             text,
-            max_length=self.text_processor.model_max_length,
+            max_length=self.text_cond_processor.model_max_length,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
         ).input_ids
 
+        # handle drop to enhance classifier-free guidance
+        drops = (
+            torch.rand(2) < torch.tensor([self.vision_drop_prob, self.text_drop_prob])
+            if self.mode == "train"
+            else None
+        )
+
         data = {
-            "pixel_values": diffusion_pixel_values,
-            "image_indexes": index,
-            "vision_condition": clip_pixel_values.squeeze(dim=0),
-            "text_condition": input_ids.squeeze(dim=0),
-            "vision_drop": drop[0],
-            "text_drop": drop[1],
+            "condition_0": vision_condition.squeeze(dim=0),
+            "condition_1": text_condition.squeeze(dim=0),
         }
 
         if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)
             data["image_indexes"] = index
 
+        elif self.mode == "train":
+            data["pixel_values"] = pixel_values
+            data["drops"] = drops
+
         return data
-
-
-class ImageNetDataset(Dataset):
-    def __init__(self, config: DictConfig):
-        super().__init__()
-        self.image_root: str = config.image_root_path
-        self.image_ext: str = config.image_ext
-
-        image_list_path = os.path.join(config.text_root_path, "image-list.json")
-        with open(image_list_path, "r") as f:
-            self.image_meta: List[str] = json.load(f)
-
-        text_list_path = os.path.join(config.text_root_path, "text-list.json")
-        with open(text_list_path, "r") as f:
-            self.text_list = json.load(f)
-
-        self.image_processor: CLIPImageProcessor = CLIPImageProcessor.from_pretrained(
-            config.clip_model_path
-        )
-        self.text_processor: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-            config.clip_model_path
-        )
-
-    def __len__(self):
-        return len(self.image_meta)
-
-    def __getitem__(self, index) -> Dict:
-        image_name = self.image_meta[index]
-        folder_name = image_name.split("_")[0]
-        image_path = os.path.join(
-            self.image_root, folder_name, ".".join([image_name, self.image_ext])
-        )
-
-        raw_image = Image.open(image_path).convert("RGB")
-        pixel_values = self.image_processor(
-            images=raw_image, return_tensors="pt"
-        ).pixel_values.squeeze(dim=0)
-
-        text = self.text_list[index]
-        tokenizer_output = self.text_processor(
-            text,
-            padding="max_length",
-            max_length=self.text_processor.model_max_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        return {
-            "pixel_values": pixel_values,
-            "input_ids": tokenizer_output.input_ids,
-            "attention_mask": tokenizer_output.attention_mask,
-        }
