@@ -182,7 +182,7 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         return data
 
 
-class ImageNetDataset(Dataset):
+class ImageTextDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig):
         super().__init__()
         self.config = config
@@ -227,8 +227,7 @@ class ImageNetDataset(Dataset):
 
     def __getitem__(self, index) -> Dict:
         image_name: str = self.meta[index]["image"]
-        image_folder = image_name.split("_")[0]
-        image_path = os.path.join(self.image_root_path, image_folder, image_name)
+        image_path = os.path.join(self.image_root_path, image_name)
         raw_image = Image.open(image_path).convert("RGB")
 
         # for vae encoder

@@ -3,7 +3,7 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   val_check_interval: 10000
-  max_epochs: 4
+  max_epochs: 1
   num_devices: 1
 
   checkpoint:
@@ -62,12 +62,12 @@ dataset:
   batch_size: 8
 
   meta_files:
-    train: /root/autodl-tmp/data/imagenet-1k/meta-train.json
-    val: /root/autodl-tmp/data/imagenet-1k/meta-validation.json
+    train: /root/autodl-tmp/data/laion-aesthetics/meta-train.json
+    val: /root/autodl-tmp/data/laion-aesthetics/meta-validation.json
 
   image_root_path: 
-    train: /root/autodl-tmp/data/imagenet-1k/images/train
-    val: /root/autodl-tmp/data/imagenet-1k/images/validation
+    train: /root/autodl-tmp/data/laion-aesthetics/images
+    val: /root/autodl-tmp/data/laion-aesthetics/validation-images
 
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
   diffusion_model_path: *diffusion_model_path

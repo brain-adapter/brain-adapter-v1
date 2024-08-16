@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 
 from transformers import CLIPVisionModelWithProjection, CLIPTextModelWithProjection
 
-from data.dataset import ImageNetDataset
+from data.dataset import ImageTextDataset
 
 
 def create_embeds(
@@ -23,7 +23,7 @@ def create_embeds(
     Create CLIP Vision Model embeds in advance to cut off training cost
     """
 
-    image_net_dataset = ImageNetDataset(
+    image_net_dataset = ImageTextDataset(
         OmegaConf.create(
             {
                 "image_root_path": os.path.join(data_root_path, "images"),

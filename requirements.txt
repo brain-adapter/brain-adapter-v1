@@ -1,0 +1,7 @@
+lightning==2.3.1
+pathlib2
+transformers
+diffusers==0.27.5
+omegaconf
+torch>=2.1.0
+lightning-flash
