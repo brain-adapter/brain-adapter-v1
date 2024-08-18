@@ -198,10 +198,8 @@ class LitAdapterModel(LitBaseModel):
 
         self.condition_encoders = nn.ModuleList(
             [
-                get_class(encoder_config.name).from_pretrained(
-                    encoder_config.pretrained_model_path
-                )
-                for encoder_config in config.lightning.condition_encoders
+                get_class(model_proj.name)(model_proj)
+                for model_proj in config.lightning.condition_models
             ]
         )
 
@@ -248,12 +246,13 @@ class LitAdapterModel(LitBaseModel):
 
         # for multi-condition inputs
         cond_embeds = ()
-        conditions = (batch[f"condition_{i}"] for i in range(len(self.condition_encoders)))
+        conditions = (
+            batch[f"condition_{i}"] for i in range(len(self.condition_encoders))
+        )
+        drops = batch["drops"]
 
         # For each adapter and condition encoder
-        for encoder, condition_inputs, drops in zip(
-            self.condition_encoders, conditions, batch["drops"]
-        ):
+        for encoder, condition_inputs in zip(self.condition_encoders, conditions):
             # Get encoder embeds
             with torch.no_grad():
                 encoder_outputs = encoder(condition_inputs)
@@ -265,7 +264,7 @@ class LitAdapterModel(LitBaseModel):
 
             cond_embeds = cond_embeds + (torch.stack(embeds, dim=0),)
 
-        cond_embeds:torch.FloatTensor = self.model(cond_embeds)
+        cond_embeds: torch.FloatTensor = self.model(cond_embeds)
 
         noise_pred: torch.Tensor = self.unet(
             noisy_latents,
@@ -320,14 +319,16 @@ class LitAdapterModel(LitBaseModel):
         # For each adapter and condition encoder
         cond_embeds = ()
         uncond_embeds = ()
-        conditions = (batch[f"condition_{i}"] for i in range(len(self.condition_encoders)))
+        conditions = (
+            batch[f"condition_{i}"] for i in range(len(self.condition_encoders))
+        )
 
         for encoder, condition in zip(self.condition_encoders, conditions):
             with torch.inference_mode():
                 encoder_embeds = encoder(condition)
 
-            cond_embeds = cond_embeds + (encoder_embeds, )
-            uncond_embeds = uncond_embeds + (torch.zeros_like(encoder_embeds), )
+            cond_embeds = cond_embeds + (encoder_embeds,)
+            uncond_embeds = uncond_embeds + (torch.zeros_like(encoder_embeds),)
 
         with torch.inference_mode():
             cond_embeds = self.model(cond_embeds)

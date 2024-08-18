@@ -861,6 +861,7 @@ class MixedAttnProcessor(nn.Module):
             )
 
         self.token_bounds = token_bounds
+        self.num_adapters = len(token_bounds)
 
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
@@ -868,14 +869,14 @@ class MixedAttnProcessor(nn.Module):
         self.to_key = nn.ModuleList(
             [
                 nn.Linear(cross_attention_dim, hidden_size, bias=False)
-                for _ in range(len(token_bounds))
+                for _ in range(self.num_adapters)
             ]
         )
 
         self.to_value = nn.ModuleList(
             [
                 nn.Linear(cross_attention_dim, hidden_size, bias=False)
-                for _ in range(len(token_bounds))
+                for _ in range(self.num_adapters)
             ]
         )
 
@@ -913,7 +914,7 @@ class MixedAttnProcessor(nn.Module):
 
         query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
-        hidden_states = 0.0
+        adapter_hidden_states_ = []
 
         for to_key, to_value, token_bounds in zip(
             self.to_key, self.to_value, self.token_bounds
@@ -922,8 +923,8 @@ class MixedAttnProcessor(nn.Module):
                 :, token_bounds[0] : token_bounds[1], :
             ]
 
-            key:torch.Tensor = to_key(adapter_hidden_states)
-            value:torch.Tensor = to_value(adapter_hidden_states)
+            key: torch.Tensor = to_key(adapter_hidden_states)
+            value: torch.Tensor = to_value(adapter_hidden_states)
 
             key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
             value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
@@ -939,7 +940,10 @@ class MixedAttnProcessor(nn.Module):
             )
             adapter_hidden_states = adapter_hidden_states.to(query.dtype)
 
-            hidden_states = hidden_states + adapter_hidden_states
+            adapter_hidden_states_.append(adapter_hidden_states)
+
+        hidden_states_ = torch.stack(adapter_hidden_states_, dim=0)
+        hidden_states = torch.sum(hidden_states_, dim=0)
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)

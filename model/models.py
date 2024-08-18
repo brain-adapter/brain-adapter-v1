@@ -312,7 +312,7 @@ class AdapterModel(PreTrainedModel):
                     layer_name = name.split(".processor")[0]
 
                     # format weights
-                    weights = {}
+                    weights: Dict[str, torch.Tensor] = {}
                     for i in range(len(self.projections)):
                         weights[f"to_key.{i}.weight"] = copy.deepcopy(
                             unet_sd[layer_name + ".to_k.weight"]
@@ -370,8 +370,8 @@ class AdapterModel(PreTrainedModel):
         cls, pretrained_model_path: str, config: Optional[DictConfig] = None
     ) -> PreTrainedModel:
         """
-        Note that after loading from a pretrained file, this model is NOT bound with the given unet.
-        You need to bind the it with the unet before using the model.
+        Note that after loading from a pretrained file, this model is NOT bound with a unet.
+        You need to bind it with the unet before using this model.
         """
         config = cls.load_config(pretrained_model_path, config)
 
@@ -479,10 +479,10 @@ class AdapterPipeline:
             cond_inputs, self.processors, self.condition_models
         ):
             cond_tensors: torch.Tensor = self.process_inputs(processor, condition)
-            
+
             model_embeds = cond_model(cond_tensors)
 
-            cond_embeds = cond_embeds + (model_embeds, )
+            cond_embeds = cond_embeds + (model_embeds,)
             uncond_embeds = uncond_embeds + (torch.zeros_like(model_embeds))
 
         uncond_embeds = self.adapter_model(uncond_embeds)
@@ -533,7 +533,9 @@ class AdapterPipeline:
         cond_embeds = cond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
 
         uncond_embeds = uncond_embeds.repeat(1, num_images_per_prompt, 1)
-        uncond_embeds = uncond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+        uncond_embeds = uncond_embeds.view(
+            bs_embed * num_images_per_prompt, seq_len, -1
+        )
 
         generator = get_generator(seed, device=self.device)
 

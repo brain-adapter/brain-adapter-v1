@@ -2,7 +2,7 @@ trainer:
   task: train_only
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
-  val_check_interval: 10000
+  val_check_interval: 500
   max_epochs: 1
   num_devices: 1
 
@@ -12,14 +12,14 @@ trainer:
     filename: lit-{step}
     save_top_k: 1
     mode: max
-    every_n_train_steps: 10000
+    every_n_epochs: 1
     save_last: false
 
 # for Tensorboard logger
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: mixed-adapter
+    name: vision-adapter
     version: 0
     default_hp_metric: false
 
@@ -30,34 +30,30 @@ lightning:
   num_images_per_prompt: 4
   num_inference_steps: 30
 
-  condition_encoders:
-    - key: vision
-      name: model.models.VisionModelWithProjection
-      pretrained_model_path: /root/autodl-tmp/pretrained/clip-model
+  condition_models:
+      - name: model.models.VisionModelWithProjection
+        model_path: &model_path1 /root/autodl-tmp/pretrained/CLIP-ViT-L-14-DataComp.XL-s13B-b90K
     
-    - key: text
-      name: model.models.TextModelWithProjection
-      pretrained_model_path: /root/autodl-tmp/pretrained/clip-model
+      - name: model.models.VisionModelWithProjection
+        model_path: &model_path2 /root/autodl-tmp/pretrained/clip-vit-l-14
 
 model:
   diffusion_model_path: *diffusion_model_path
 
   projection_configs:
-    - key: vision
-      input_dim: 768
+    - input_dim: 768
       token_bounds:
         - 0
         - 4
 
-    - key: text
-      input_dim: 768
+    - input_dim: 768
       token_bounds:
         - 4
         - 8
 
 dataset: 
-  name: data.dataset.ImageNetDataset
-  num_workers: 4 # num_devices * 4
+  name: data.dataset.ImageDataset
+  num_workers: 2 # num_devices * 2
   resolution: 512
   batch_size: 8
 
@@ -69,11 +65,11 @@ dataset:
     train: /root/autodl-tmp/data/laion-aesthetics/images
     val: /root/autodl-tmp/data/laion-aesthetics/validation-images
 
-  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
-  diffusion_model_path: *diffusion_model_path
+  condition_model_paths: 
+    - *model_path1
+    - *model_path2
 
-  text_drop_prob: 0.05
-  image_drop_prob: 0.05
+  drop_probability: 0.05
 
 # constant learning rate
 optimizer:

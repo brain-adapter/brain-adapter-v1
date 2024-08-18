@@ -182,6 +182,84 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         return data
 
 
+class ImageDataset(Dataset):
+    def __init__(self, mode: str, config: DictConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.mode = mode
+
+        self.resolution = config.resolution
+        self.image_root_path = config.image_root_path[mode]
+
+        with open(config.meta_files[mode], "r") as f:
+            self.meta: List = json.load(f)
+
+        self.vae_processor = (
+            transforms.Compose(
+                [
+                    transforms.Resize(
+                        config.resolution,
+                        interpolation=transforms.InterpolationMode.BILINEAR,
+                    ),
+                    transforms.CenterCrop(self.resolution),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5]),
+                ]
+            )
+            if mode == "train"
+            else None
+        )
+
+        self.cond_processors = [
+            CLIPImageProcessor.from_pretrained(model_path)
+            for model_path in config.condition_model_paths
+        ]
+
+        self.drop_probability = config.drop_probability
+
+    def __len__(self):
+        return len(self.meta)
+
+    def __getitem__(self, index) -> Dict:
+        image_name: str = self.meta[index]["image"]
+        image_path = os.path.join(self.image_root_path, image_name)
+        raw_image = Image.open(image_path).convert("RGB")
+
+        # for vae encoder
+        pixel_values = self.vae_processor(raw_image) if self.mode == "train" else None
+
+        # for inference
+        ground_truth: Union[torch.FloatTensor, None] = (
+            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
+            if self.mode == "val" or self.mode == "test"
+            else None
+        )
+
+        # for vision condition
+        conditions: List[torch.FloatTensor] = [
+            processor(images=raw_image, return_tensors="pt").pixel_values
+            for processor in self.cond_processors
+        ]
+
+        # handle drop to enhance classifier-free guidance
+        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
+
+        data = {
+            f"condition_{i}": conditions[i].squeeze(dim=0)
+            for i in range(len(conditions))
+        }
+
+        if self.mode == "val" or self.mode == "test":
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
+            data["image_indexes"] = index
+
+        elif self.mode == "train":
+            data["pixel_values"] = pixel_values
+            data["drops"] = drops
+
+        return data
+
+
 class ImageTextDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig):
         super().__init__()
@@ -211,16 +289,15 @@ class ImageTextDataset(Dataset):
         )
 
         self.vis_cond_processor = CLIPImageProcessor.from_pretrained(
-            config.clip_model_path
+            config.condition_model_path
         )
 
         self.text_cond_processor: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-            config.clip_model_path
+            config.condition_model_path
         )
 
         # handle drop to enhance classifier-free guidance
-        self.text_drop_prob = config.get("text_drop_prob", None)
-        self.vision_drop_prob = config.get("image_drop_prob", None)
+        self.drop_probability = config.drop_probability
 
     def __len__(self):
         return len(self.meta)
@@ -256,11 +333,7 @@ class ImageTextDataset(Dataset):
         ).input_ids
 
         # handle drop to enhance classifier-free guidance
-        drops = (
-            torch.rand(2) < torch.tensor([self.vision_drop_prob, self.text_drop_prob])
-            if self.mode == "train"
-            else None
-        )
+        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
         data = {
             "condition_0": vision_condition.squeeze(dim=0),
