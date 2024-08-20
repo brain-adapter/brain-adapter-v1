@@ -4,3 +4,4 @@ __pycache__/
 imagenet2captions.py
 test.py
 downloader.sh
+meta-validation.json

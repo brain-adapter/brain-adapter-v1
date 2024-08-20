@@ -409,13 +409,13 @@ class EEGTransformer(nn.Module):
         pooled_output = last_hidden_state[:, 0, :]
         pooled_output = self.post_layernorm(pooled_output)
 
-        return (pooled_output,) + encoder_outputs[1:]
+        return (pooled_output,) + encoder_outputs[1:] + (last_hidden_state, )
 
 
-class VisionPerceiver(nn.Module):
+class PerceiverResampler(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.input_proj = nn.Linear(config.input_dim, config.hidden_size)
+        self.input_proj = nn.Linear(config.input_dim, config.cross_attention_dim)
 
         self.latents = nn.Parameter(
             torch.randn(1, config.query_tokens, config.hidden_size)
@@ -425,13 +425,16 @@ class VisionPerceiver(nn.Module):
         self.block = CrossAttentionBlock(
             num_layers=config.num_layers,
             hidden_size=config.hidden_size,
+            kv_dim=config.cross_attention_dim,
             num_attention_heads=config.num_attention_heads,
             dropout=config.get("dropout", 0.0),
             mlp_ratio=config.get("mlp_ratio", 1.0),
             act_fn=config.get("act_fn", "gelu"),
         )
 
-        self.post_layernorm = nn.LayerNorm(config.hidden_size)
+        self.output_proj = nn.Linear(config.hidden_size, config.output_dim)
+
+        self.post_layernorm = nn.LayerNorm(config.output_dim)
 
     def forward(
         self,
@@ -447,9 +450,9 @@ class VisionPerceiver(nn.Module):
             latents, tokens, output_attentions=output_attentions
         )
 
-        last_hidden_state: torch.Tensor = encoder_outputs[0]
+        last_hidden_state = encoder_outputs[0]
 
-        pooled_output = last_hidden_state.squeeze(dim=1)
+        pooled_output: torch.Tensor = self.output_proj(last_hidden_state)
         pooled_output = self.post_layernorm(pooled_output)
 
         return (pooled_output,) + encoder_outputs[1:]
