@@ -5,9 +5,10 @@ from typing_extensions import override
 import torch
 import torchvision
 import lightning
+import kornia
 from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch import nn
 from diffusers import (
     UNet2DConditionModel,
@@ -22,7 +23,7 @@ from model.models import (
     VisionModelWithProjection,
     AdapterModel,
     PreTrainedModel,
-    JointModel,
+    BlurReconstructionModel,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -360,7 +361,7 @@ class LitAdapterModel(LitBaseModel):
 
     @override
     @rank_zero_only
-    def validation_step(self, batch, batch_idx) -> torch.Tensor:
+    def validation_step(self, batch, batch_idx):
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
@@ -415,21 +416,52 @@ class LitPixelReconModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = JointModel.from_pretrained(pretrained_model_path)
+            self.model = BlurReconstructionModel.from_pretrained(pretrained_model_path)
         else:
-            self.model = JointModel(config=config.model)
+            self.model = BlurReconstructionModel(config=config.model)
 
         self.eeg_model = EncoderModel.from_pretrained(config.lightning.eeg_model_path)
-        self.vae_model = AutoencoderKL.from_pretrained(
+        self.vae = AutoencoderKL.from_pretrained(
             config.diffusion_model_path, subfolder="vae"
         )
 
         self.eeg_model.requires_grad_(False)
-        self.vae_model.requires_grad_(False)
+        self.vae.requires_grad_(False)
 
         self.model.train()
 
     @override
     def forward(self, batch):
-        # TODO
+        eeg_values, pixel_values = (batch["eeg_values"], batch["pixel_values"])
+
+        blured_pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
+
+        with torch.no_grad():
+            latents = self.vae.encode(blured_pixel_values).latent_dist.sample()
+            latents: torch.Tensor = latents * self.vae.config.scaling_factor
+
+            eeg_embeds = self.eeg_model(eeg_values)
+
+        latents_pred = self.model(eeg_embeds)
+
+        pixel_pred = self.vae.decode(
+            latents_pred / self.vae.config.scaling_factor, return_dict=False
+        )[0]
+
+        latent_loss = nn.functional.l1_loss(latents_pred, latents)
+        reconstruction_loss = nn.functional.l1_loss(
+            pixel_pred, 2 * blured_pixel_values - 1
+        )
+
+        loss = latent_loss / self.vae.config.scaling_factor + reconstruction_loss * 2.0
+
+        return {
+            "loss": loss,
+            "latent_loss": latent_loss,
+            "reconstruction_loss": reconstruction_loss,
+        }
+    
+    @override
+    @rank_zero_only
+    def validation_step(self, batch, batch_idx):
         pass

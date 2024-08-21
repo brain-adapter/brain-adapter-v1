@@ -138,11 +138,39 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
                 transforms.ToTensor(),
             ]
         )
-        self.resolution = config.get("resolution", 512)
-    
-    def __getitem__(self, index) -> Dict:
-        data =  super().__getitem__(index)
+        self.resolution: int = config.resolution
 
+    def __getitem__(self, index) -> Dict:
+        idx = self.splitter[index]
+        item: Dict = self.dataset[idx]
+
+        image_path = os.path.join(
+            self.image_root_path,
+            ".".join([self.images[item["image"]], self.image_ext]),
+        )
+        raw_image = Image.open(image_path).convert("RGB")
+
+        vision_inputs = self.image_processor(
+            images=raw_image, return_tensors="pt"
+        ).pixel_values
+        ground_truth = (
+            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
+            if self.mode == "val" or self.mode == "test"
+            else None
+        )
+
+        eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
+
+        data = {
+            "pixel_values": vision_inputs.squeeze(dim=0),
+            "eeg_values": eeg_inputs,
+        }
+
+        if self.mode == "val" or self.mode == "test":
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
+            data["image_indexes"] = self.images[item["image"]]
+
+        return data
 
 
 class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
@@ -161,9 +189,9 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
             ]
         )
 
-        self.resolution = config.get("resolution", 512)
+        self.resolution = config.resolution
 
-        self.image_drop_prob: float = config.get("image_drop_prob", 0.05)
+        self.drop_probability: float = config.drop_probability
 
         if mode == "val" or self.mode == "test":
             self.splitter = random.sample(
@@ -180,24 +208,25 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         )
         raw_image = Image.open(image_path).convert("RGB")
 
-        pixel_values = self.image_processor(raw_image)
+        pixel_values = self.image_processor(
+            images=raw_image, return_tensors="pt"
+        ).pixel_values
         ground_truth = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
             if self.mode == "val" or self.mode == "test"
             else None
         )
 
-        drop = torch.rand(2) < torch.tensor([self.image_drop_prob, self.text_drop_prob])
+        # handle drop to enhance classifier-free guidance
+        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
         eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
 
         data = {
-            "pixel_values": pixel_values,
+            "pixel_values": pixel_values.squeeze(dim=0),
             "image_indexes": item["image"],
-            "vision_condition": eeg_inputs,
-            "text_condition": eeg_inputs,
-            "vision_drop": drop[0],
-            "text_drop": drop[1],
+            "condition_0": eeg_inputs,
+            "drops": drops,
         }
 
         if self.mode == "val" or self.mode == "test":
@@ -213,7 +242,7 @@ class ImageDataset(Dataset):
         self.config = config
         self.mode = mode
 
-        self.resolution = config.resolution
+        self.resolution: int = config.resolution
         self.image_root_path = config.image_root_path[mode]
 
         with open(config.meta_files[mode], "r") as f:
@@ -240,7 +269,7 @@ class ImageDataset(Dataset):
             for model_path in config.condition_model_paths
         ]
 
-        self.drop_probability = config.drop_probability
+        self.drop_probability: float = config.drop_probability
 
     def __len__(self):
         return len(self.meta)
@@ -292,7 +321,7 @@ class ImageTextDataset(Dataset):
 
         self.image_root_path = config.image_root_path[mode]
         self.mode = mode
-        self.resolution = config.resolution
+        self.resolution: int = config.resolution
 
         with open(config.meta_files[mode], "r") as f:
             self.meta = json.load(f)
