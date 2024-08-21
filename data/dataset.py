@@ -53,7 +53,10 @@ class EEGImageNetDataset(Dataset):
 
         loaded = torch.load(config.eeg_data_path)
         dataset = loaded["dataset"]
+
         self.images = loaded["images"]
+        self.image_root_path: str = config.image_root_path
+        self.image_ext: str = config.image_ext
 
         # preprocess the raw data
         if "stddevs" in loaded.keys() and "means" in loaded.keys():
@@ -85,15 +88,15 @@ class EEGImageNetDataset(Dataset):
             i for i in splitter if 450 <= self.dataset[i]["eeg"].shape[-1] <= 600
         ]
 
-        self.teacher_embeds = (
-            torch.load(config.teacher_embeds_path)
-            if config.get("teacher_embeds_path") is not None
-            else None
-        )
+        # processors for eeg and images
 
         self.eeg_processor = EEGProcessor(
             time_low=config.get("time_low", None),
             time_high=config.get("time_high", None),
+        )
+
+        self.image_processor = CLIPImageProcessor.from_pretrained(
+            config.teacher_model_path
         )
 
     def __len__(self):
@@ -103,16 +106,43 @@ class EEGImageNetDataset(Dataset):
         idx = self.splitter[index]
         item: Dict = self.dataset[idx]
 
+        image_path = os.path.join(
+            self.image_root_path,
+            ".".join([self.images[item["image"]], self.image_ext]),
+        )
+        raw_image = Image.open(image_path).convert("RGB")
+        vision_inputs = self.image_processor(
+            images=raw_image, return_tensors="pt"
+        ).pixel_values.squeeze(dim=0)
+
+        eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
+
         data = {
-            "eeg_values": self.eeg_processor(item["eeg"], return_batches=False),
+            "eeg_values": eeg_inputs,
+            "pixel_values": vision_inputs,
             "label": item["label"],
             "subject": item["subject"],
         }
 
-        if self.teacher_embeds is not None:
-            data["teacher_embeds"] = self.teacher_embeds[item["image"]]
-
         return data
+
+
+class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
+    def __init__(self, mode: str, config: DictConfig) -> None:
+        super().__init__(mode, config)
+
+        # modify this if necessary
+        self.image_processor = transforms.Compose(
+            [
+                transforms.Resize((config.resolution, config.resolution)),
+                transforms.ToTensor(),
+            ]
+        )
+        self.resolution = config.get("resolution", 512)
+    
+    def __getitem__(self, index) -> Dict:
+        data =  super().__getitem__(index)
+
 
 
 class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
@@ -131,11 +161,8 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
             ]
         )
 
-        self.image_root_path = config.image_root_path
         self.resolution = config.get("resolution", 512)
 
-        # handle drop to enhance classifier-free guidance
-        self.text_drop_prob: float = config.get("text_drop_prob", 0.1)
         self.image_drop_prob: float = config.get("image_drop_prob", 0.05)
 
         if mode == "val" or self.mode == "test":
@@ -147,11 +174,9 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         idx = self.splitter[index]
         item: Dict = self.dataset[idx]
 
-        image_name: str = self.images[item["image"]]
         image_path = os.path.join(
             self.image_root_path,
-            image_name.split("_")[0],
-            ".".join([image_name, self.config.image_ext]),
+            ".".join([self.images[item["image"]], self.image_ext]),
         )
         raw_image = Image.open(image_path).convert("RGB")
 

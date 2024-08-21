@@ -17,11 +17,12 @@ from diffusers import (
 )
 
 from model.models import (
+    EncoderModel,
     EncoderModelWithProjection,
+    VisionModelWithProjection,
     AdapterModel,
     PreTrainedModel,
-    VisionModelWithProjection,
-    TextModelWithProjection,
+    JointModel,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -93,7 +94,7 @@ class LitBaseModel(lightning.LightningModule):
         return [optimizer]
 
 
-class LitBrainStudentModel(LitBaseModel):
+class LitBrainKDModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
@@ -105,19 +106,31 @@ class LitBrainStudentModel(LitBaseModel):
         else:
             self.model = EncoderModelWithProjection(config=config.model.eeg_config)
 
+        self.teacher_model = VisionModelWithProjection.from_pretrained(
+            config.lightning.teacher_model_path
+        )
+        self.teacher_model.requires_grad_(False)
+
         self.model.train()
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, teacher_embeds = (
+        eeg_values, pixel_values = (
             batch["eeg_values"],
-            batch["teacher_embeds"],
+            batch["pixel_values"],
         )
         eeg_embeds = self.model(eeg_values)
 
+        with torch.no_grad():
+            teacher_embeds = self.teacher_model(pixel_values)
+
+        # cosine loss
         loss = 1 - nn.functional.cosine_similarity(
             eeg_embeds, teacher_embeds, dim=-1
         ).mean(dim=-1)
+
+        # or try mse loss
+        # loss = nn.functional.mse_loss(eeg_embeds, teacher_embeds)
 
         return {
             "eeg_embeds": eeg_embeds,
@@ -394,3 +407,29 @@ class LitAdapterModel(LitBaseModel):
                         save_directory, f"{image_indexes[i]}-{j}.png"
                     )
                     image.save(save_path)
+
+
+class LitPixelReconModel(LitBaseModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        pretrained_model_path = config.lightning.get("pretrained_model_path", None)
+        if pretrained_model_path is not None:
+            self.model = JointModel.from_pretrained(pretrained_model_path)
+        else:
+            self.model = JointModel(config=config.model)
+
+        self.eeg_model = EncoderModel.from_pretrained(config.lightning.eeg_model_path)
+        self.vae_model = AutoencoderKL.from_pretrained(
+            config.diffusion_model_path, subfolder="vae"
+        )
+
+        self.eeg_model.requires_grad_(False)
+        self.vae_model.requires_grad_(False)
+
+        self.model.train()
+
+    @override
+    def forward(self, batch):
+        # TODO
+        pass

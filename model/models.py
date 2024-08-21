@@ -1,6 +1,6 @@
 import os
 import copy
-from typing import Optional, Tuple, Union, List, Dict
+from typing import Optional, Tuple, Union, List, Dict, Mapping
 from typing_extensions import override
 
 import torch
@@ -113,6 +113,58 @@ class PreTrainedModel(nn.Module):
         self.config = config
 
 
+class JointModel(PreTrainedModel):
+    """
+    Wrapper for multi-pretrained models
+    """
+
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.models: Mapping[str, PreTrainedModel] = nn.ModuleDict(
+            {
+                key: get_class(model_config.name)(model_config)
+                for key, model_config in config.models.items()
+            }
+        )
+
+    def save_pretrained(self, save_directory: str):
+        model_indexes: Dict[str, str] = {}
+        for key, model in self.models.items():
+            sub_folder = os.path.join(save_directory, key)
+
+            model.save_pretrained(sub_folder)
+            model_indexes[key] = {
+                "model_path": sub_folder,
+                "model_name": self.config.models[key].name,
+            }
+
+        index_config = OmegaConf.create(model_indexes)
+        index_path = os.path.join(save_directory, "model_index.yml")
+
+        OmegaConf.save(index_config, index_path)
+
+    @override
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
+    ):
+        index_path = os.path.join(pretrained_model_path, "model_index.yml")
+        index_config = OmegaConf.load(index_path)
+
+        models: Dict[str, PreTrainedModel] = {}
+        configs = {}
+        for key, item in index_config.items():
+            models[key] = get_class(item.model_name).from_pretrained(item.model_path)
+            configs[key] = models[key].config
+
+        joint_model = cls(OmegaConf.create({"models": configs}))
+        models:nn.ModuleDict = nn.ModuleDict(models)
+        joint_model.models.load_state_dict(models.state_dict())
+
+        return joint_model
+
+
 class EncoderModel(PreTrainedModel):
     """
     Encoder model wrapper
@@ -123,14 +175,28 @@ class EncoderModel(PreTrainedModel):
 
         self.encoder = get_class(config.encoder_name)(config)
 
+        self.output_key: Union[int, str] = config.output_key
+
         self.apply(self._init_weights)
 
     def forward(self, inputs: torch.Tensor):
         encoder_outputs = self.encoder(inputs, output_attentions=False)
 
-        embeds = encoder_outputs[0]
+        return encoder_outputs[self.output_key]
 
-        return embeds
+
+class ExternalModel(PreTrainedModel):
+    """
+    Wrapper for external models
+    """
+
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.model = get_class(config.model_name)(**config.params)
+
+    def forward(self, **inputs) -> torch.Tensor:
+        return self.model(**inputs)
 
 
 class EncoderModelWithProjection(PreTrainedModel):
@@ -554,3 +620,21 @@ class AdapterPipeline:
         ).images
 
         return images
+
+
+class BlurReconstructionModel(JointModel):
+    """
+    For blur reconstruction
+    """
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        # perceiver resampler, EncoderModel
+        resampler = self.models["resampler"]
+        resampler_results = resampler(inputs)
+
+        # vae decoder, ExternalModel
+        # diffusers.models.autoencoders.vae.Decoder
+        decoder = self.models["decoder"]
+        decoder_results = decoder(sample=resampler_results)
+
+        return decoder_results
+
