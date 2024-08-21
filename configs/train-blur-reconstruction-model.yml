@@ -26,7 +26,7 @@ logger:
 lightning:
   name: model.lightnings.LitBlurReconModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
-  eeg_model_path: # TODO
+  eeg_model_path: # Your pretrained eeg model
 
 model:
   # Joint model

@@ -152,9 +152,7 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
         )
         raw_image = Image.open(image_path).convert("RGB")
 
-        vision_inputs = self.image_processor(
-            images=raw_image, return_tensors="pt"
-        ).pixel_values
+        vision_inputs = self.image_processor(raw_image)
         ground_truth = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
             if self.mode == "val" or self.mode == "test"

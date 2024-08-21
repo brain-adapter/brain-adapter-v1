@@ -176,7 +176,7 @@ class EncoderModel(PreTrainedModel):
 
         self.encoder = get_class(config.encoder_name)(config)
 
-        self.output_key: Union[int, str] = config.output_key
+        self.output_key: Union[int, str] = config.get("output_key", 1)
 
         self.apply(self._init_weights)
 
@@ -184,6 +184,32 @@ class EncoderModel(PreTrainedModel):
         encoder_outputs = self.encoder(inputs, output_attentions=False)
 
         return encoder_outputs[self.output_key]
+
+    @override
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_path: Optional[str] = None,
+        config: Optional[DictConfig] = None,
+    ) -> PreTrainedModel:
+        config = cls.load_config(pretrained_model_path, config)
+
+        model: nn.Module = cls(config)
+        model_path = os.path.join(pretrained_model_path, "pytorch_model.bin")
+
+        loaded_ckpt = copy.deepcopy(torch.load(model_path, map_location="cpu"))
+
+        model_keys = list(model.state_dict().keys())
+
+        model_ckpt = {
+            key: value for key, value in loaded_ckpt.items() if key in model_keys
+        }
+
+        model.load_state_dict(model_ckpt)
+
+        model.eval()
+
+        return model
 
 
 class ExternalModel(PreTrainedModel):
@@ -195,6 +221,8 @@ class ExternalModel(PreTrainedModel):
         super().__init__(config)
 
         self.model = get_class(config.model_name)(**config.params)
+
+        self.apply(self._init_weights)
 
     def forward(self, **inputs) -> torch.Tensor:
         return self.model(**inputs)
@@ -262,7 +290,7 @@ class VisionModelWithProjection(PreTrainedModel):
         pretrained_model_path: Optional[str] = None,
         config: Optional[DictConfig] = None,
     ) -> PreTrainedModel:
-        config = cls.load_config(pretrained_model_path, config)
+        config = OmegaConf.create({"model_path": pretrained_model_path})
 
         model = cls(config)
         # Set model in evaluation mode to deactivate DropOut modules by default
@@ -271,12 +299,7 @@ class VisionModelWithProjection(PreTrainedModel):
 
     @override
     def save_pretrained(self, save_directory: str):
-        if not os.path.exists(save_directory):
-            os.makedirs(save_directory)
-
-        config_path = os.path.join(save_directory, "config.yml")
-        # save the model config file as yaml
-        OmegaConf.save(self.config, config_path)
+        raise ValueError("Cannot save an external pretrained model!")
 
 
 class TextModelWithProjection(PreTrainedModel):
@@ -311,7 +334,7 @@ class TextModelWithProjection(PreTrainedModel):
         pretrained_model_path: Optional[str] = None,
         config: Optional[DictConfig] = None,
     ) -> PreTrainedModel:
-        config = cls.load_config(pretrained_model_path, config)
+        config = OmegaConf.create({"model_path": pretrained_model_path})
 
         model = cls(config)
         # Set model in evaluation mode to deactivate DropOut modules by default
@@ -320,12 +343,7 @@ class TextModelWithProjection(PreTrainedModel):
 
     @override
     def save_pretrained(self, save_directory: str):
-        if not os.path.exists(save_directory):
-            os.makedirs(save_directory)
-
-        config_path = os.path.join(save_directory, "config.yml")
-        # save the model config file as yaml
-        OmegaConf.save(self.config, config_path)
+        raise ValueError("Cannot save an external pretrained model!")
 
 
 class AdapterModel(PreTrainedModel):
@@ -631,12 +649,18 @@ class BlurReconstructionModel(JointModel):
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         # perceiver resampler, EncoderModel
         resampler = self.models["resampler"]
-        resampler_results = resampler(inputs)
+        resampler_results: torch.Tensor = resampler(inputs)
+
+        feature_width = int(self.config.resampler.query_tokens**0.5)
+
+        decoder_inputs = resampler_results.transpose(1, 2).reshape(
+            resampler_results.shape[0], -1, feature_width, feature_width
+        ).contiguous()
 
         # vae decoder, ExternalModel
         # diffusers.models.autoencoders.vae.Decoder
         decoder = self.models["decoder"]
-        decoder_results = decoder(sample=resampler_results)
+        decoder_results = decoder(sample=decoder_inputs)
 
         return decoder_results
 
@@ -675,8 +699,8 @@ class BlurReconstructionPipeline:
 
     def __call__(
         self,
-        eeg_values: Optional[torch.Tensor],
-        eeg_embeds: Optional[torch.Tensor],
+        eeg_values: Optional[torch.Tensor] = None,
+        eeg_embeds: Optional[torch.Tensor] = None,
         seed: Optional[int] = None,
         output_type: str = "pil",  # pil, pt, np
     ) -> Union[Image.Image, torch.Tensor]:

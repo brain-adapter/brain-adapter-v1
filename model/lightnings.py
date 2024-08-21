@@ -423,7 +423,7 @@ class LitBlurReconModel(LitBaseModel):
 
         self.eeg_model = EncoderModel.from_pretrained(config.lightning.eeg_model_path)
         self.vae = AutoencoderKL.from_pretrained(
-            config.diffusion_model_path, subfolder="vae"
+            config.lightning.diffusion_model_path, subfolder="vae"
         )
 
         self.eeg_model.requires_grad_(False)

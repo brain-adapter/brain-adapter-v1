@@ -2,7 +2,7 @@ trainer:
   task: train_and_test_with_best
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: &interval 1
   max_epochs: 30
   num_devices: 1
 
@@ -12,20 +12,22 @@ trainer:
     filename: lit-{val_loss:.4f}
     save_top_k: 1
     mode: min
-    every_n_epochs: 1
+    every_n_epochs: *interval
     save_last: false
 
 # for Tensorboard logger
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-vision-model
+    name: brain-kd-model
     version: 5-95
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitBrainStudentModel
+  name: model.lightnings.LitBrainKDModel
+
   pretrained_model_path: null
+  teacher_model_path: &teacher_model_path /root/autodl-tmp/pretrained/clip-vit-l-14
 
 model:
   eeg_config:
@@ -46,7 +48,7 @@ model:
 dataset: 
   name: data.dataset.EEGImageNetDataset
 
-  num_workers: 4 # num_devices * 4
+  num_workers: 2 # num_devices * 2
   subject: 0 # 0 means using data of all subjects
   batch_size: 16
 
@@ -55,7 +57,7 @@ dataset:
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  teacher_model_path: /root/autodl-tmp/pretrained/clip-vit-l-14
+  teacher_model_path: *teacher_model_path
 
   merge_train_and_val: true
 
