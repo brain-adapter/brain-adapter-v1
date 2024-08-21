@@ -25,6 +25,7 @@ from model.models import (
     PreTrainedModel,
     BlurReconstructionModel,
     AdapterPipeline,
+    BlurReconstructionPipeline,
 )
 from model.modules import compute_snr, get_class
 
@@ -348,7 +349,7 @@ class LitAdapterModel(LitBaseModel):
             cond_embeds = self.model(cond_embeds)
             uncond_embeds = self.model(uncond_embeds)
 
-        images = pipeline.generate(
+        images = pipeline(
             cond_embeds=cond_embeds,
             uncond_embeds=uncond_embeds,
             seed=seed,
@@ -410,7 +411,7 @@ class LitAdapterModel(LitBaseModel):
                     image.save(save_path)
 
 
-class LitPixelReconModel(LitBaseModel):
+class LitBlurReconModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
@@ -444,9 +445,10 @@ class LitPixelReconModel(LitBaseModel):
 
         latents_pred = self.model(eeg_embeds)
 
-        pixel_pred = self.vae.decode(
-            latents_pred / self.vae.config.scaling_factor, return_dict=False
-        )[0]
+        with torch.no_grad():
+            pixel_pred = self.vae.decode(
+                latents_pred / self.vae.config.scaling_factor, return_dict=False
+            )[0]
 
         latent_loss = nn.functional.l1_loss(latents_pred, latents)
         reconstruction_loss = nn.functional.l1_loss(
@@ -460,8 +462,47 @@ class LitPixelReconModel(LitBaseModel):
             "latent_loss": latent_loss,
             "reconstruction_loss": reconstruction_loss,
         }
-    
+
+    def reconstruction(
+        self,
+        batch,
+        **kwargs,
+    ):
+        pipeline = BlurReconstructionPipeline(
+            reconstruction_model=self.model,
+            vae=self.vae,
+            device=self.device,
+            dtype=self.dtype,
+        )
+        eeg_values = batch["eeg_values"]
+        with torch.inference_mode():
+            eeg_embeds = self.eeg_model(eeg_values)
+
+        images = pipeline(eeg_embeds=eeg_embeds, **kwargs)
+
+        return images
+
     @override
     @rank_zero_only
     def validation_step(self, batch, batch_idx):
+        seed = self.config.trainer.get("seed", None)
+        images: torch.Tensor = self.reconstruction(batch, seed=seed, output_type="pt")
+
+        images = images.cpu()
+        ground_truth = batch["ground_truth"].cpu()
+
+        image_grid = torchvision.utils.make_grid(
+            torch.cat([ground_truth, images], dim=0), nrow=images.shape[0], padding=4
+        )
+
+        # log images to tensorboard logger
+        self.logger.experiment.add_image(
+            f"image_grid-{batch_idx}", image_grid, self.global_step, dataformats="CHW"
+        )
+    
+    @override
+    @rank_zero_only
+    def test_step(self, batch, batch_idx):
         pass
+        # TODO implement this method if you need to do test process
+

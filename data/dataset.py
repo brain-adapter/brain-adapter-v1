@@ -95,8 +95,10 @@ class EEGImageNetDataset(Dataset):
             time_high=config.get("time_high", None),
         )
 
-        self.image_processor = CLIPImageProcessor.from_pretrained(
-            config.teacher_model_path
+        self.image_processor = (
+            CLIPImageProcessor.from_pretrained(config.teacher_model_path)
+            if config.get("teacher_model_path", None) is not None
+            else None
         )
 
     def __len__(self):

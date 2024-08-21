@@ -6,7 +6,7 @@ from typing_extensions import override
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
-from diffusers import UNet2DConditionModel, StableDiffusionPipeline
+from diffusers import UNet2DConditionModel, StableDiffusionPipeline, AutoencoderKL
 from transformers import (
     CLIPImageProcessor,
     CLIPTokenizer,
@@ -25,6 +25,7 @@ from model.modules import (
     get_device,
 )
 from data.dataset import EEGProcessor
+from model.evaluation import pt_to_numpy, numpy_to_pil
 
 
 class PreTrainedModel(nn.Module):
@@ -124,7 +125,7 @@ class JointModel(PreTrainedModel):
         self.models: Mapping[str, PreTrainedModel] = nn.ModuleDict(
             {
                 key: get_class(model_config.name)(model_config)
-                for key, model_config in config.models.items()
+                for key, model_config in config.items()
             }
         )
 
@@ -158,8 +159,8 @@ class JointModel(PreTrainedModel):
             models[key] = get_class(item.model_name).from_pretrained(item.model_path)
             configs[key] = models[key].config
 
-        joint_model = cls(OmegaConf.create({"models": configs}))
-        models:nn.ModuleDict = nn.ModuleDict(models)
+        joint_model = cls(OmegaConf.create(configs))
+        models: nn.ModuleDict = nn.ModuleDict(models)
         joint_model.models.load_state_dict(models.state_dict())
 
         return joint_model
@@ -556,7 +557,7 @@ class AdapterPipeline:
 
         return cond_embeds, uncond_embeds
 
-    def generate(
+    def __call__(
         self,
         cond_inputs: Optional[
             Dict[
@@ -579,15 +580,15 @@ class AdapterPipeline:
             self.condition_models.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
 
-        if cond_embeds is not None and uncond_embeds is not None:
-            cond_embeds = cond_embeds.to(self.device, self.dtype)
-            uncond_embeds = uncond_embeds.to(self.device, self.dtype)
-        elif cond_embeds is None and uncond_embeds is None:
+        if cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
         elif cond_embeds is not None and uncond_embeds is None:
             raise ValueError("Got [cond_embeds], but [uncond_embeds] is missing")
         elif cond_embeds is None and uncond_embeds is not None:
             raise ValueError("Got [uncond_embeds], but [cond_embeds] is missing")
+
+        cond_embeds = cond_embeds.to(self.device, self.dtype)
+        uncond_embeds = uncond_embeds.to(self.device, self.dtype)
 
         num_images_per_prompt = (
             num_images_per_prompt if num_images_per_prompt is not None else 1
@@ -626,6 +627,7 @@ class BlurReconstructionModel(JointModel):
     """
     For blur reconstruction
     """
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         # perceiver resampler, EncoderModel
         resampler = self.models["resampler"]
@@ -638,3 +640,74 @@ class BlurReconstructionModel(JointModel):
 
         return decoder_results
 
+
+class BlurReconstructionPipeline:
+    def __init__(
+        self,
+        reconstruction_model: BlurReconstructionModel,
+        vae: AutoencoderKL,
+        eeg_model: Optional[EncoderModel] = None,
+        processor: Optional[EEGProcessor] = None,
+        device: Union[str, torch.device, None] = None,
+        dtype: Optional[torch.dtype] = None,
+    ):
+        if isinstance(device, torch.device):
+            self.device = device
+        else:
+            self.device = get_device(device)
+        self.dtype = dtype if dtype is not None else torch.float16
+
+        self.eeg_model = eeg_model
+        self.vae = vae
+        self.reconstruction_model = reconstruction_model
+
+        self.processor = processor
+
+    @torch.inference_mode()
+    def get_eeg_embeds(self, eeg_values: torch.Tensor):
+        assert self.processor is not None, "Got eeg values but the processor is None"
+        eeg_inputs = self.processor(eeg_values)
+
+        assert self.eeg_model is not None, "Got eeg values but the eeg_model is None"
+        eeg_embeds = self.eeg_model(eeg_inputs)
+
+        return eeg_embeds
+
+    def __call__(
+        self,
+        eeg_values: Optional[torch.Tensor],
+        eeg_embeds: Optional[torch.Tensor],
+        seed: Optional[int] = None,
+        output_type: str = "pil",  # pil, pt, np
+    ) -> Union[Image.Image, torch.Tensor]:
+        self.reconstruction_model.to(self.device, self.dtype)
+        self.vae.to(self.device, self.dtype)
+
+        if self.eeg_model is not None:
+            self.eeg_model.to(self.device, self.dtype)
+
+        if eeg_embeds is None and eeg_values is not None:
+            eeg_embeds = self.get_eeg_embeds(eeg_values)
+
+        eeg_embeds = eeg_embeds.to(self.device, self.dtype)
+
+        generator = get_generator(seed, device=self.device)
+
+        with torch.inference_mode():
+            latents_pred = self.reconstruction_model(eeg_embeds)
+            pixel_pred = self.vae.decode(
+                latents_pred / self.vae.config.scaling_factor,
+                return_dict=False,
+                generator=generator,
+            )[0]
+
+        pixel_values = pixel_pred / 2.0 + 0.5
+
+        results = pixel_values.clamp(0, 1)
+
+        if output_type == "np":
+            results = pt_to_numpy(results)
+        if output_type == "pil":
+            results = numpy_to_pil(results)
+
+        return results

@@ -33,9 +33,6 @@ lightning:
   condition_models:
       - name: model.models.VisionModelWithProjection
         model_path: &model_path1 /root/autodl-tmp/pretrained/CLIP-ViT-L-14-DataComp.XL-s13B-b90K
-    
-      - name: model.models.VisionModelWithProjection
-        model_path: &model_path2 /root/autodl-tmp/pretrained/clip-vit-l-14
 
 model:
   diffusion_model_path: *diffusion_model_path
@@ -45,11 +42,6 @@ model:
       token_bounds:
         - 0
         - 4
-
-    - input_dim: 768
-      token_bounds:
-        - 4
-        - 8
 
 dataset: 
   name: data.dataset.ImageDataset
@@ -67,7 +59,6 @@ dataset:
 
   condition_model_paths: 
     - *model_path1
-    - *model_path2
 
   drop_probability: 0.05
 
