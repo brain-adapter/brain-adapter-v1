@@ -1,7 +1,7 @@
 from typing import Type
 import lightning
 from torch.utils.data import DataLoader
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import OmegaConf
 
 from model.modules import get_class
 

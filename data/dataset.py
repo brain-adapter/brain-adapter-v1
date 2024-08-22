@@ -142,6 +142,11 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
         )
         self.resolution: int = config.resolution
 
+        if mode == "val" or self.mode == "test":
+            self.splitter = random.sample(
+                self.splitter, config.get("num_validation_images", 4)
+            )
+
     def __getitem__(self, index) -> Dict:
         idx = self.splitter[index]
         item: Dict = self.dataset[idx]

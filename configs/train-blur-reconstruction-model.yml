@@ -3,7 +3,7 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
-  max_epochs: 1
+  max_epochs: 30
   num_devices: 1
 
   checkpoint:
@@ -26,7 +26,7 @@ logger:
 lightning:
   name: model.lightnings.LitBlurReconModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
-  eeg_model_path: # Your pretrained eeg model
+  eeg_model_path: /root/autodl-tmp/pretrained/brain-kd-model-val_loss=0.2530
 
 model:
   # Joint model
@@ -38,12 +38,12 @@ model:
     # params
     input_dim: 768
     cross_attention_dim: 768
-    hidden_size: 128
+    hidden_size: 512
     num_layers: 4
-    num_attention_heads: 2
+    num_attention_heads: 8
     mlp_ratio: 1.0
-    output_dim: 64
-    query_tokens: 256
+    output_dim: 256
+    query_tokens: 64
   
   decoder:
     name: model.models.ExternalModel
@@ -80,6 +80,7 @@ dataset:
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
 
   merge_train_and_val: true
+  num_validation_images: 8
 
 
 optimizer:

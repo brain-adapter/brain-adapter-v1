@@ -651,13 +651,15 @@ class BlurReconstructionModel(JointModel):
         resampler = self.models["resampler"]
         resampler_results: torch.Tensor = resampler(inputs)
 
-        feature_width = int(self.config.resampler.output_dim**0.5)
-        if feature_width * feature_width != self.config.resampler.output_dim:
-            raise ValueError("The output dim should be able to be squared")
+        feature_width = int(self.config.resampler.query_tokens**0.5)
+        if feature_width * feature_width != self.config.resampler.query_tokens:
+            raise ValueError("The query_tokens should be able to be squared")
 
-        decoder_inputs = resampler_results.reshape(
-            resampler_results.shape[0], -1, feature_width, feature_width
-        ).contiguous()
+        decoder_inputs = (
+            resampler_results.transpose(1, 2)
+            .reshape(resampler_results.shape[0], feature_width, feature_width, -1)
+            .contiguous()
+        )
 
         # vae decoder, ExternalModel
         # diffusers.models.autoencoders.vae.Decoder

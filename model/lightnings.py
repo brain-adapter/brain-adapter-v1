@@ -17,6 +17,8 @@ from diffusers import (
     StableDiffusionPipeline,
 )
 
+from diffusers.image_processor import VaeImageProcessor
+
 from model.models import (
     EncoderModel,
     EncoderModelWithProjection,
@@ -429,49 +431,47 @@ class LitBlurReconModel(LitBaseModel):
         self.eeg_model.requires_grad_(False)
         self.vae.requires_grad_(False)
 
+        self.image_processor = VaeImageProcessor(
+            vae_scale_factor=self.vae.config.scaling_factor
+        )
+
         self.model.train()
 
     @override
     def forward(self, batch):
         eeg_values, pixel_values = (batch["eeg_values"], batch["pixel_values"])
 
-        blured_pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
+        pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
 
         with torch.no_grad():
-            latents = self.vae.encode(2 * blured_pixel_values - 1).latent_dist.sample()
+            latents: torch.Tensor = self.vae.encode(pixel_values).latent_dist.sample()
             latents: torch.Tensor = latents * self.vae.config.scaling_factor
 
             eeg_embeds = self.eeg_model(eeg_values)
 
         latents_pred = self.model(eeg_embeds)
 
-        with torch.no_grad():
-            pixel_pred = self.vae.decode(
-                latents_pred / self.vae.config.scaling_factor, return_dict=False
-            )[0]
+        loss = nn.functional.l1_loss(latents_pred, latents, reduction="mean")
 
-        latent_loss = nn.functional.l1_loss(latents_pred, latents)
-        reconstruction_loss = nn.functional.l1_loss(
-            pixel_pred, 2 * blured_pixel_values - 1
-        )
-
-        loss = latent_loss / self.vae.config.scaling_factor + reconstruction_loss * 2.0
-
-        pixel_values: torch.Tensor = pixel_pred / 2.0 + 0.5
-        pixel_values = pixel_values.clamp(0, 1)
-
-        return {
-            "loss": loss,
-            "latent_loss": latent_loss,
-            "reconstruction_loss": reconstruction_loss,
-            "pixel_values": pixel_values,
-        }
+        return {"loss": loss, "latents_pred": latents_pred}
 
     @override
     @rank_zero_only
     def validation_step(self, batch, batch_idx):
         model_outputs = self(batch)
-        images:torch.Tensor = model_outputs["pixel_values"]
+
+        loss, latents = (model_outputs["loss"], model_outputs["latents_pred"])
+
+        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
+
+        with torch.inference_mode():
+            images = self.vae.decode(
+                latents / self.vae.config.scaling_factor, return_dict=False
+            )[0]
+
+        images = self.image_processor.postprocess(
+            images, output_type="pt", do_denormalize=[True] * images.shape[0]
+        )
 
         images = images.cpu()
         ground_truth = batch["ground_truth"].cpu()
@@ -479,13 +479,10 @@ class LitBlurReconModel(LitBaseModel):
         image_grid = torchvision.utils.make_grid(
             torch.cat([ground_truth, images], dim=0), nrow=images.shape[0], padding=4
         )
-
         # log images to tensorboard logger
         self.logger.experiment.add_image(
             f"image_grid-{batch_idx}", image_grid, self.global_step, dataformats="CHW"
         )
-
-        return model_outputs
 
     @override
     @rank_zero_only

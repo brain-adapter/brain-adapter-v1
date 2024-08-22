@@ -44,6 +44,8 @@ model:
 
     projection_dim: 768
 
+    output_key: 1
+
 
 dataset: 
   name: data.dataset.EEGImageNetDataset
