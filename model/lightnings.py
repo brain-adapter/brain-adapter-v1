@@ -438,7 +438,7 @@ class LitBlurReconModel(LitBaseModel):
         blured_pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
 
         with torch.no_grad():
-            latents = self.vae.encode(blured_pixel_values).latent_dist.sample()
+            latents = self.vae.encode(2 * blured_pixel_values - 1).latent_dist.sample()
             latents: torch.Tensor = latents * self.vae.config.scaling_factor
 
             eeg_embeds = self.eeg_model(eeg_values)
@@ -457,36 +457,21 @@ class LitBlurReconModel(LitBaseModel):
 
         loss = latent_loss / self.vae.config.scaling_factor + reconstruction_loss * 2.0
 
+        pixel_values: torch.Tensor = pixel_pred / 2.0 + 0.5
+        pixel_values = pixel_values.clamp(0, 1)
+
         return {
             "loss": loss,
             "latent_loss": latent_loss,
             "reconstruction_loss": reconstruction_loss,
+            "pixel_values": pixel_values,
         }
-
-    def reconstruction(
-        self,
-        batch,
-        **kwargs,
-    ):
-        pipeline = BlurReconstructionPipeline(
-            reconstruction_model=self.model,
-            vae=self.vae,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        eeg_values = batch["eeg_values"]
-        with torch.inference_mode():
-            eeg_embeds = self.eeg_model(eeg_values)
-
-        images = pipeline(eeg_embeds=eeg_embeds, **kwargs)
-
-        return images
 
     @override
     @rank_zero_only
     def validation_step(self, batch, batch_idx):
-        seed = self.config.trainer.get("seed", None)
-        images: torch.Tensor = self.reconstruction(batch, seed=seed, output_type="pt")
+        model_outputs = self(batch)
+        images:torch.Tensor = model_outputs["pixel_values"]
 
         images = images.cpu()
         ground_truth = batch["ground_truth"].cpu()
@@ -499,10 +484,11 @@ class LitBlurReconModel(LitBaseModel):
         self.logger.experiment.add_image(
             f"image_grid-{batch_idx}", image_grid, self.global_step, dataformats="CHW"
         )
-    
+
+        return model_outputs
+
     @override
     @rank_zero_only
     def test_step(self, batch, batch_idx):
         pass
         # TODO implement this method if you need to do test process
-

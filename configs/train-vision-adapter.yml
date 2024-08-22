@@ -31,8 +31,8 @@ lightning:
   num_inference_steps: 30
 
   condition_models:
-      - name: model.models.VisionModelWithProjection
-        model_path: &model_path1 /root/autodl-tmp/pretrained/CLIP-ViT-L-14-DataComp.XL-s13B-b90K
+    - name: model.models.VisionModelWithProjection
+      model_path: &model_path1 /root/autodl-tmp/pretrained/clip-vit-l-14
 
 model:
   diffusion_model_path: *diffusion_model_path
