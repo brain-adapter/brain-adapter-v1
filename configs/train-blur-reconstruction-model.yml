@@ -38,9 +38,9 @@ model:
     # params
     input_dim: 768
     cross_attention_dim: 768
-    hidden_size: 256
+    hidden_size: 128
     num_layers: 4
-    num_attention_heads: 4
+    num_attention_heads: 2
     mlp_ratio: 1.0
     output_dim: 64
     query_tokens: 256
