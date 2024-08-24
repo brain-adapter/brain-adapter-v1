@@ -37,7 +37,7 @@ model:
     output_key: 0
     # params
     input_dim: 768
-    cross_attention_dim: 768
+    cross_attention_dim: 512
     hidden_size: 512
     num_layers: 4
     num_attention_heads: 8

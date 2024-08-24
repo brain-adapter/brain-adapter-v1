@@ -133,11 +133,15 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
     def __init__(self, mode: str, config: DictConfig) -> None:
         super().__init__(mode, config)
 
-        # modify this if necessary
         self.image_processor = transforms.Compose(
             [
-                transforms.Resize((config.resolution, config.resolution)),
+                transforms.Resize(
+                    config.resolution,
+                    interpolation=transforms.InterpolationMode.BILINEAR,
+                ),
+                transforms.CenterCrop(config.resolution),
                 transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
             ]
         )
         self.resolution: int = config.resolution
@@ -178,30 +182,11 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
         return data
 
 
-class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
+class EEGImageNetDatasetForGeneration(EEGImageNetDatasetForBlurReconstruction):
     def __init__(self, mode: str, config: DictConfig) -> None:
         super().__init__(mode, config)
 
-        self.image_processor = transforms.Compose(
-            [
-                transforms.Resize(
-                    config.resolution,
-                    interpolation=transforms.InterpolationMode.BILINEAR,
-                ),
-                transforms.CenterCrop(config.resolution),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-
-        self.resolution = config.resolution
-
         self.drop_probability: float = config.drop_probability
-
-        if mode == "val" or self.mode == "test":
-            self.splitter = random.sample(
-                self.splitter, config.get("num_validation_images", 4)
-            )
 
     def __getitem__(self, index) -> Dict:
         idx = self.splitter[index]

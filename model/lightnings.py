@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Union, Optional
+from typing import Dict, Optional
 from typing_extensions import override
 
 import torch
@@ -108,7 +108,7 @@ class LitBrainKDModel(LitBaseModel):
                 pretrained_model_path
             )
         else:
-            self.model = EncoderModelWithProjection(config=config.model.eeg_config)
+            self.model = EncoderModelWithProjection(config=config.model)
 
         self.teacher_model = VisionModelWithProjection.from_pretrained(
             config.lightning.teacher_model_path
@@ -441,7 +441,7 @@ class LitBlurReconModel(LitBaseModel):
     def forward(self, batch):
         eeg_values, pixel_values = (batch["eeg_values"], batch["pixel_values"])
 
-        pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
+        # pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
 
         with torch.no_grad():
             latents: torch.Tensor = self.vae.encode(pixel_values).latent_dist.sample()
@@ -451,7 +451,7 @@ class LitBlurReconModel(LitBaseModel):
 
         latents_pred = self.model(eeg_embeds)
 
-        loss = nn.functional.l1_loss(latents_pred, latents, reduction="mean")
+        loss = nn.functional.l1_loss(latents_pred, latents)
 
         return {"loss": loss, "latents_pred": latents_pred}
 

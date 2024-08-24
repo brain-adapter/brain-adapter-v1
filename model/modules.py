@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Type
+from typing import Optional, Tuple, Type, Union
 import torch
 from torch import nn
 from omegaconf import DictConfig
@@ -82,6 +82,7 @@ class EEGEmbeddings(nn.Module):
         num_samples: int,
         patch_size: int,
         embed_dim: int,
+        cls_token: bool = True,
     ):
         super().__init__()
         assert (
@@ -95,11 +96,15 @@ class EEGEmbeddings(nn.Module):
             bias=False,
         )
 
-        self.class_embedding = nn.Parameter(torch.randn(embed_dim))
-
         self.num_patches = num_samples // patch_size
-        self.num_positions = self.num_patches + 1
         self.embed_dim = embed_dim
+
+        if cls_token:
+            self.class_embedding = nn.Parameter(torch.randn(embed_dim))
+            self.num_positions = self.num_patches + 1
+        else:
+            self.register_parameter("class_embedding", None)
+            self.num_positions = self.num_patches
 
         self.position_embedding = nn.Embedding(self.num_positions, embed_dim)
         self.register_buffer(
@@ -114,8 +119,11 @@ class EEGEmbeddings(nn.Module):
             self.patch_embedding(values).transpose(1, 2).contiguous()
         )  # shape = [batch_size, num_sequence, embed_dim]
 
-        class_embeds = self.class_embedding.expand(batch_size, 1, -1)
-        embeddings = torch.cat([class_embeds, patch_embeds], dim=1)
+        if self.class_embedding is not None:
+            class_embeds = self.class_embedding.expand(batch_size, 1, -1)
+            embeddings = torch.cat([class_embeds, patch_embeds], dim=1)
+        else:
+            embeddings = patch_embeds
 
         embeddings = embeddings + self.position_embedding(self.position_ids)
         return embeddings
@@ -373,12 +381,15 @@ class EEGTransformer(nn.Module):
         super().__init__()
 
         self.config = config
+        self.pool_type = config.get("pool_type", "cls")
+
         # learnable pos embedding is more compatible for EEG features
         self.embeddings = EEGEmbeddings(
             num_channels=config.num_channels,
             num_samples=config.num_samples,
             patch_size=config.patch_size,
             embed_dim=config.hidden_size,
+            cls_token=self.pool_type == "cls",
         )
         self.pre_layernorm = nn.LayerNorm(config.hidden_size)
 
@@ -397,7 +408,7 @@ class EEGTransformer(nn.Module):
         self,
         eeg_values: torch.Tensor,
         output_attentions: Optional[bool] = False,
-    ) -> Tuple[torch.FloatTensor]:
+    ) -> Tuple[Union[torch.FloatTensor, Tuple[torch.FloatTensor]]]:
         hidden_states = self.embeddings(eeg_values)
 
         encoder_outputs: Tuple = self.block(
@@ -406,10 +417,19 @@ class EEGTransformer(nn.Module):
 
         last_hidden_state: torch.Tensor = encoder_outputs[0]
 
-        pooled_output = last_hidden_state[:, 0, :]
+        if self.pool_type == "cls":
+            pooled_output = last_hidden_state[:, 0, :]
+        elif self.pool_type == "avg":
+            pooled_output = torch.mean(last_hidden_state, dim=1)
+        else:
+            pooled_output = last_hidden_state
+
         pooled_output = self.post_layernorm(pooled_output)
 
-        return (pooled_output,) + encoder_outputs[1:] + (last_hidden_state, )
+        return (
+            pooled_output,
+            last_hidden_state,
+        ) + encoder_outputs[1:]
 
 
 class PerceiverResampler(nn.Module):

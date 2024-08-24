@@ -40,9 +40,10 @@ class PreTrainedModel(nn.Module):
         if isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=0.02)
         elif isinstance(module, EEGEmbeddings):
-            nn.init.normal_(
-                module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
-            )
+            if module.class_embedding is not None:
+                nn.init.normal_(
+                    module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
+                )
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
         elif isinstance(module, EncoderModelWithProjection):
             nn.init.normal_(
@@ -137,7 +138,7 @@ class JointModel(PreTrainedModel):
             model.save_pretrained(sub_folder)
             model_indexes[key] = {
                 "model_path": sub_folder,
-                "model_name": self.config.models[key].name,
+                "model_name": self.config[key].name,
             }
 
         index_config = OmegaConf.create(model_indexes)
@@ -184,6 +185,14 @@ class EncoderModel(PreTrainedModel):
         encoder_outputs = self.encoder(inputs, output_attentions=False)
 
         return encoder_outputs[self.output_key]
+
+    @torch.inference_mode()
+    def get_attn_maps(self, inputs: torch.Tensor):
+        encoder_outputs = self.encoder(inputs, output_attentions=True)
+
+        attn_maps = encoder_outputs[2]
+
+        return attn_maps
 
     @override
     @classmethod
@@ -255,7 +264,7 @@ class EncoderModelWithProjection(PreTrainedModel):
     def get_attn_maps(self, inputs: torch.Tensor):
         encoder_outputs = self.encoder(inputs, output_attentions=True)
 
-        attn_maps = encoder_outputs[1]
+        attn_maps = encoder_outputs[2]
 
         return attn_maps
 
@@ -657,7 +666,7 @@ class BlurReconstructionModel(JointModel):
 
         decoder_inputs = (
             resampler_results.transpose(1, 2)
-            .reshape(resampler_results.shape[0], feature_width, feature_width, -1)
+            .reshape(resampler_results.shape[0], -1, feature_width, feature_width)
             .contiguous()
         )
 
