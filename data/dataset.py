@@ -215,7 +215,7 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDatasetForBlurReconstruction):
         data = {
             "pixel_values": pixel_values.squeeze(dim=0),
             "image_indexes": item["image"],
-            "condition_0": eeg_inputs,
+            "conditions": eeg_inputs,
             "drops": drops,
         }
 
@@ -254,10 +254,9 @@ class ImageDataset(Dataset):
             else None
         )
 
-        self.cond_processors = [
-            CLIPImageProcessor.from_pretrained(model_path)
-            for model_path in config.condition_model_paths
-        ]
+        self.cond_processor = CLIPImageProcessor.from_pretrained(
+            config.condition_model_path
+        )
 
         self.drop_probability: float = config.drop_probability
 
@@ -280,109 +279,14 @@ class ImageDataset(Dataset):
         )
 
         # for vision condition
-        conditions: List[torch.FloatTensor] = [
-            processor(images=raw_image, return_tensors="pt").pixel_values
-            for processor in self.cond_processors
-        ]
-
-        # handle drop to enhance classifier-free guidance
-        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
-
-        data = {
-            f"condition_{i}": conditions[i].squeeze(dim=0)
-            for i in range(len(conditions))
-        }
-
-        if self.mode == "val" or self.mode == "test":
-            data["ground_truth"] = ground_truth.squeeze(dim=0)
-            data["image_indexes"] = index
-
-        elif self.mode == "train":
-            data["pixel_values"] = pixel_values
-            data["drops"] = drops
-
-        return data
-
-
-class ImageTextDataset(Dataset):
-    def __init__(self, mode: str, config: DictConfig):
-        super().__init__()
-        self.config = config
-
-        self.image_root_path = config.image_root_path[mode]
-        self.mode = mode
-        self.resolution: int = config.resolution
-
-        with open(config.meta_files[mode], "r") as f:
-            self.meta = json.load(f)
-
-        self.vae_processor = (
-            transforms.Compose(
-                [
-                    transforms.Resize(
-                        config.resolution,
-                        interpolation=transforms.InterpolationMode.BILINEAR,
-                    ),
-                    transforms.CenterCrop(self.resolution),
-                    transforms.ToTensor(),
-                    transforms.Normalize([0.5], [0.5]),
-                ]
-            )
-            if mode == "train"
-            else None
-        )
-
-        self.vis_cond_processor = CLIPImageProcessor.from_pretrained(
-            config.condition_model_path
-        )
-
-        self.text_cond_processor: CLIPTokenizer = CLIPTokenizer.from_pretrained(
-            config.condition_model_path
-        )
-
-        # handle drop to enhance classifier-free guidance
-        self.drop_probability = config.drop_probability
-
-    def __len__(self):
-        return len(self.meta)
-
-    def __getitem__(self, index) -> Dict:
-        image_name: str = self.meta[index]["image"]
-        image_path = os.path.join(self.image_root_path, image_name)
-        raw_image = Image.open(image_path).convert("RGB")
-
-        # for vae encoder
-        pixel_values = self.vae_processor(raw_image) if self.mode == "train" else None
-
-        # for inference
-        ground_truth: Union[torch.FloatTensor, None] = (
-            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
-            if self.mode == "val" or self.mode == "test"
-            else None
-        )
-
-        # for vision adapter
-        vision_condition: torch.FloatTensor = self.vis_cond_processor(
+        conditions: torch.FloatTensor = self.cond_processor(
             images=raw_image, return_tensors="pt"
         ).pixel_values
 
-        # for text adapter
-        text = self.meta[index]["caption"]
-        text_condition: torch.Tensor = self.text_cond_processor(
-            text,
-            max_length=self.text_cond_processor.model_max_length,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        ).input_ids
-
         # handle drop to enhance classifier-free guidance
         drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
-        data = {
-            "condition_0": vision_condition.squeeze(dim=0),
-            "condition_1": text_condition.squeeze(dim=0),
-        }
+        data = {"conditions": conditions.squeeze(dim=0)}
 
         if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)

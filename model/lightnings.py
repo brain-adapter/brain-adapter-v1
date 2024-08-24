@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 from typing_extensions import override
 
 import torch
@@ -113,7 +113,12 @@ class LitBrainKDModel(LitBaseModel):
         self.teacher_model = VisionModelWithProjection.from_pretrained(
             config.lightning.teacher_model_path
         )
+        self.adapter_model = AdapterModel.from_pretrained(
+            config.lightning.adapter_model_path
+        )
+
         self.teacher_model.requires_grad_(False)
+        self.adapter_model.requires_grad_(False)
 
         self.model.train()
 
@@ -123,22 +128,30 @@ class LitBrainKDModel(LitBaseModel):
             batch["eeg_values"],
             batch["pixel_values"],
         )
-        eeg_embeds = self.model(eeg_values)
+        eeg_embeds: torch.Tensor = self.model(eeg_values)
 
+        # get teacher encoder embeds and teacher adapter tokens without gradient
         with torch.no_grad():
-            teacher_embeds = self.teacher_model(pixel_values)
+            teacher_embeds: torch.Tensor = self.teacher_model(pixel_values)
+            teacher_adapter_tokens = self.adapter_model(teacher_embeds)
 
-        # cosine loss
-        loss = 1 - nn.functional.cosine_similarity(
-            eeg_embeds, teacher_embeds, dim=-1
-        ).mean(dim=-1)
+        eeg_adapter_tokens = self.adapter_model(eeg_embeds)
 
-        # or try mse loss
-        # loss = nn.functional.mse_loss(eeg_embeds, teacher_embeds)
+        normed_eeg_embeds = eeg_embeds / eeg_embeds.norm(p=2, dim=-1, keepdim=True)
+        normed_teacher_embeds = teacher_embeds / teacher_embeds.norm(
+            p=2, dim=-1, keepdim=True
+        )
+
+        encoder_loss = nn.functional.mse_loss(normed_eeg_embeds, normed_teacher_embeds)
+        adapter_loss = nn.functional.mse_loss(
+            eeg_adapter_tokens, teacher_adapter_tokens
+        )
+
+        loss = encoder_loss + adapter_loss
 
         return {
-            "eeg_embeds": eeg_embeds,
-            "teacher_embeds": teacher_embeds,
+            "encoder_loss": encoder_loss,
+            "adapter_loss": adapter_loss,
             "loss": loss,
         }
 
@@ -213,17 +226,15 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="scheduler"
         )
 
-        self.condition_encoders = nn.ModuleList(
-            [
-                get_class(model_proj.name)(model_proj)
-                for model_proj in config.lightning.condition_models
-            ]
+        self.condition_encoder: Union[
+            VisionModelWithProjection, EncoderModelWithProjection
+        ] = get_class(config.lightning.condition_model.name).from_pretrained(
+            config.lightning.condition_model.model_path
         )
 
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
-        self.condition_encoders.eval()
-        self.condition_encoders.requires_grad_(False)
+        self.condition_encoder.requires_grad_(False)
 
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
@@ -261,25 +272,18 @@ class LitAdapterModel(LitBaseModel):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-        # for multi-condition inputs
-        cond_embeds = ()
-        conditions = (
-            batch[f"condition_{i}"] for i in range(len(self.condition_encoders))
-        )
-        drops = batch["drops"]
+        conditions, drops = (batch["conditions"], batch["drops"])
 
-        # For each adapter and condition encoder
-        for encoder, condition_inputs in zip(self.condition_encoders, conditions):
-            # Get encoder embeds
-            with torch.no_grad():
-                encoder_outputs = encoder(condition_inputs)
+        with torch.no_grad():
+            encoder_outputs = self.condition_encoder(conditions)
 
-            embeds = [
+        cond_embeds = torch.stack(
+            (
                 torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
                 for encoder_output, drop in zip(encoder_outputs, drops)
-            ]
-
-            cond_embeds = cond_embeds + (torch.stack(embeds, dim=0),)
+            ),
+            dim=0,
+        )
 
         cond_embeds: torch.FloatTensor = self.model(cond_embeds)
 
@@ -333,19 +337,13 @@ class LitAdapterModel(LitBaseModel):
             device=self.device,
             dtype=self.dtype,
         )
-        # For each adapter and condition encoder
-        cond_embeds = ()
-        uncond_embeds = ()
-        conditions = (
-            batch[f"condition_{i}"] for i in range(len(self.condition_encoders))
-        )
 
-        for encoder, condition in zip(self.condition_encoders, conditions):
-            with torch.inference_mode():
-                encoder_embeds = encoder(condition)
+        conditions = batch["conditions"]
 
-            cond_embeds = cond_embeds + (encoder_embeds,)
-            uncond_embeds = uncond_embeds + (torch.zeros_like(encoder_embeds),)
+        # get condition embeds
+        with torch.inference_mode():
+            cond_embeds = self.condition_encoder(conditions)
+        uncond_embeds = torch.zeros_like(cond_embeds)
 
         with torch.inference_mode():
             cond_embeds = self.model(cond_embeds)

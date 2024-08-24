@@ -481,7 +481,7 @@ class PerceiverResampler(nn.Module):
 class AdapterProjection(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
-        self.num_tokens: int = config.token_bounds[1] - config.token_bounds[0]
+        self.num_tokens: int = config.num_tokens
         self.cross_attention_dim = config.cross_attention_dim
         self.input_dim = config.input_dim
 
@@ -766,9 +766,9 @@ class IPAttnProcessor(nn.Module):
         return hidden_states
 
 
-class SingleAttnProcessor(nn.Module):
+class VisionAttnProcessor(nn.Module):
     r"""
-    Attention processor for single condition for PyTorch 2.0.
+    Attention processor for vision-only condition for PyTorch 2.0.
     Args:
         hidden_size (`int`):
             The hidden size of the attention layer.

@@ -30,18 +30,16 @@ lightning:
   num_images_per_prompt: 4
   num_inference_steps: 30
 
-  condition_models:
-    - name: model.models.VisionModelWithProjection
-      model_path: &model_path1 /root/autodl-tmp/pretrained/clip-vit-l-14
+  condition_model:
+    name: model.models.VisionModelWithProjection
+    model_path: &condition_model_path /root/autodl-tmp/pretrained/clip-vit-l-14
 
 model:
   diffusion_model_path: *diffusion_model_path
 
-  projection_configs:
-    - input_dim: 768
-      token_bounds:
-        - 0
-        - 4
+  projection_config:
+    input_dim: 768
+    num_tokens: 4
 
 dataset: 
   name: data.dataset.ImageDataset
@@ -57,10 +55,9 @@ dataset:
     train: /root/autodl-tmp/data/laion-aesthetics/images
     val: /root/autodl-tmp/data/laion-aesthetics/validation-images
 
-  condition_model_paths: 
-    - *model_path1
+  condition_model_path: *condition_model_path
 
-  drop_probability: 0.05
+  drop_probability: 0.1
 
 # constant learning rate
 optimizer:
