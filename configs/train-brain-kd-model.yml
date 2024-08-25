@@ -20,14 +20,15 @@ logger:
     save_dir: /root/tf-logs
     sub_dir: logs
     name: brain-kd-model
-    version: 5-95
+    version: 5-95-2
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitBrainKDModel
 
   pretrained_model_path: null
-  teacher_model_path: &teacher_model_path /root/autodl-tmp/pretrained/clip-vit-l-14
+  teacher_model_path: &teacher_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  adapter_model_path: null # TODO
 
 model:
   name: model.models.EncoderModelWithProjection
@@ -37,7 +38,7 @@ model:
   num_samples: 440
   patch_size: 4
   hidden_size: 768
-  num_layers: 12
+  num_layers: 6
   num_attention_heads: 12
   mlp_ratio: 1.0
   dropout: 0.1

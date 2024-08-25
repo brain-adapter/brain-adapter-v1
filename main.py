@@ -110,11 +110,11 @@ def main(config: DictConfig):
 
         for path in ckpt_paths:
             model = model_class.load_from_checkpoint(path, map_location="cpu")
-            step = Path(path).stem.split("-")[1]
+            monitor = Path(path).stem.split("-")[1]
             # save weights and config only
             save_model(
                 model,
-                os.path.join(save_directory, "-".join([config.logger.name, step])),
+                os.path.join(save_directory, "-".join([config.logger.name, monitor])),
             )
             # remove lightning checkpoints
             os.remove(path)

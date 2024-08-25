@@ -122,8 +122,8 @@ class EEGImageNetDataset(Dataset):
         data = {
             "eeg_values": eeg_inputs,
             "pixel_values": vision_inputs,
-            "label": item["label"],
-            "subject": item["subject"],
+            "labels": item["label"],
+            "subjects": item["subject"],
         }
 
         return data

@@ -44,7 +44,10 @@ class PreTrainedModel(nn.Module):
                 nn.init.normal_(
                     module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
                 )
+            if module.subject_embedding is not None:
+                nn.init.normal_(module.subject_embedding.weight, std=0.02)
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
+
         elif isinstance(module, EncoderModelWithProjection):
             nn.init.normal_(
                 module.projection.weight,
@@ -181,14 +184,14 @@ class EncoderModel(PreTrainedModel):
 
         self.apply(self._init_weights)
 
-    def forward(self, inputs: torch.Tensor):
-        encoder_outputs = self.encoder(inputs, output_attentions=False)
+    def forward(self, inputs: torch.Tensor, **kwargs):
+        encoder_outputs = self.encoder(inputs, output_attentions=False, **kwargs)
 
         return encoder_outputs[self.output_key]
 
     @torch.inference_mode()
-    def get_attn_maps(self, inputs: torch.Tensor):
-        encoder_outputs = self.encoder(inputs, output_attentions=True)
+    def get_attn_maps(self, inputs: torch.Tensor, **kwargs):
+        encoder_outputs = self.encoder(inputs, output_attentions=True, **kwargs)
 
         attn_maps = encoder_outputs[2]
 
@@ -253,16 +256,16 @@ class EncoderModelWithProjection(PreTrainedModel):
         )
         self.apply(self._init_weights)
 
-    def forward(self, inputs: torch.Tensor):
-        encoder_outputs = self.encoder(inputs, output_attentions=False)
+    def forward(self, inputs: torch.Tensor, **kwargs):
+        encoder_outputs = self.encoder(inputs, output_attentions=False, **kwargs)
 
         embeds = self.projection(encoder_outputs[0])
 
         return embeds
 
     @torch.inference_mode()
-    def get_attn_maps(self, inputs: torch.Tensor):
-        encoder_outputs = self.encoder(inputs, output_attentions=True)
+    def get_attn_maps(self, inputs: torch.Tensor, **kwargs):
+        encoder_outputs = self.encoder(inputs, output_attentions=True, **kwargs)
 
         attn_maps = encoder_outputs[2]
 
@@ -276,65 +279,18 @@ class VisionModelWithProjection(PreTrainedModel):
             config.model_path
         )
 
-    def forward(
-        self,
-        pixel_values: torch.FloatTensor,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> torch.Tensor:
-        image_embeds = self.vision_model(
-            pixel_values,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )[0]
+    def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> torch.Tensor:
+        image_embeds = self.vision_model(pixel_values)[0]
 
         return image_embeds
 
-    @override
-    @classmethod
-    def from_pretrained(
-        cls,
-        pretrained_model_path: Optional[str] = None,
-        config: Optional[DictConfig] = None,
-    ) -> PreTrainedModel:
-        config = OmegaConf.create({"model_path": pretrained_model_path})
+    @torch.inference_mode()
+    def get_attn_maps(self, inputs: torch.Tensor):
+        encoder_outputs = self.vision_model(inputs, output_attentions=True)
 
-        model = cls(config)
-        # Set model in evaluation mode to deactivate DropOut modules by default
-        model.eval()
-        return model
+        attn_maps = encoder_outputs[3]
 
-    @override
-    def save_pretrained(self, save_directory: str):
-        raise ValueError("Cannot save an external pretrained model!")
-
-
-class TextModelWithProjection(PreTrainedModel):
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-        self.text_model = CLIPTextModelWithProjection.from_pretrained(config.model_path)
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.Tensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ):
-        text_embeds = self.text_model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )[0]
-
-        return text_embeds
+        return attn_maps
 
     @override
     @classmethod

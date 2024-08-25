@@ -82,7 +82,7 @@ class EEGEmbeddings(nn.Module):
         num_samples: int,
         patch_size: int,
         embed_dim: int,
-        cls_token: bool = True,
+        cls_token: Optional[bool] = True,  # class token for global semantics
     ):
         super().__init__()
         assert (
@@ -98,13 +98,13 @@ class EEGEmbeddings(nn.Module):
 
         self.num_patches = num_samples // patch_size
         self.embed_dim = embed_dim
+        self.num_positions = self.num_patches
 
         if cls_token:
             self.class_embedding = nn.Parameter(torch.randn(embed_dim))
-            self.num_positions = self.num_patches + 1
+            self.num_positions = self.num_positions + 1
         else:
             self.register_parameter("class_embedding", None)
-            self.num_positions = self.num_patches
 
         self.position_embedding = nn.Embedding(self.num_positions, embed_dim)
         self.register_buffer(
@@ -115,18 +115,23 @@ class EEGEmbeddings(nn.Module):
 
     def forward(self, values: torch.Tensor):
         batch_size = values.shape[0]
+
+        embeds = []
+
+        if self.class_embedding is not None:
+            class_embeds = self.class_embedding.expand(batch_size, 1, -1)
+            embeds.append(class_embeds)
+
         patch_embeds = (
             self.patch_embedding(values).transpose(1, 2).contiguous()
         )  # shape = [batch_size, num_sequence, embed_dim]
 
-        if self.class_embedding is not None:
-            class_embeds = self.class_embedding.expand(batch_size, 1, -1)
-            embeddings = torch.cat([class_embeds, patch_embeds], dim=1)
-        else:
-            embeddings = patch_embeds
+        embeds.append(patch_embeds)
 
-        embeddings = embeddings + self.position_embedding(self.position_ids)
-        return embeddings
+        embeds = torch.cat(embeds, dim=1)
+
+        embeds = embeds + self.position_embedding(self.position_ids)
+        return embeds
 
 
 class MLP(nn.Module):
@@ -382,6 +387,7 @@ class EEGTransformer(nn.Module):
 
         self.config = config
         self.pool_type = config.get("pool_type", "cls")
+        config.get("subj_token", False)
 
         # learnable pos embedding is more compatible for EEG features
         self.embeddings = EEGEmbeddings(

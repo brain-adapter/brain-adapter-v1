@@ -5,7 +5,6 @@ from typing_extensions import override
 import torch
 import torchvision
 import lightning
-import kornia
 from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
 from omegaconf import DictConfig
@@ -27,7 +26,6 @@ from model.models import (
     PreTrainedModel,
     BlurReconstructionModel,
     AdapterPipeline,
-    BlurReconstructionPipeline,
 )
 from model.modules import compute_snr, get_class
 
@@ -113,12 +111,12 @@ class LitBrainKDModel(LitBaseModel):
         self.teacher_model = VisionModelWithProjection.from_pretrained(
             config.lightning.teacher_model_path
         )
-        self.adapter_model = AdapterModel.from_pretrained(
-            config.lightning.adapter_model_path
-        )
+        # self.adapter_model = AdapterModel.from_pretrained(
+        #     config.lightning.adapter_model_path
+        # )
 
         self.teacher_model.requires_grad_(False)
-        self.adapter_model.requires_grad_(False)
+        # self.adapter_model.requires_grad_(False)
 
         self.model.train()
 
@@ -133,9 +131,9 @@ class LitBrainKDModel(LitBaseModel):
         # get teacher encoder embeds and teacher adapter tokens without gradient
         with torch.no_grad():
             teacher_embeds: torch.Tensor = self.teacher_model(pixel_values)
-            teacher_adapter_tokens = self.adapter_model(teacher_embeds)
+            # teacher_adapter_tokens = self.adapter_model(teacher_embeds)
 
-        eeg_adapter_tokens = self.adapter_model(eeg_embeds)
+        # eeg_adapter_tokens = self.adapter_model(eeg_embeds)
 
         normed_eeg_embeds = eeg_embeds / eeg_embeds.norm(p=2, dim=-1, keepdim=True)
         normed_teacher_embeds = teacher_embeds / teacher_embeds.norm(
@@ -143,15 +141,15 @@ class LitBrainKDModel(LitBaseModel):
         )
 
         encoder_loss = nn.functional.mse_loss(normed_eeg_embeds, normed_teacher_embeds)
-        adapter_loss = nn.functional.mse_loss(
-            eeg_adapter_tokens, teacher_adapter_tokens
-        )
+        # adapter_loss = nn.functional.mse_loss(
+        #     eeg_adapter_tokens, teacher_adapter_tokens
+        # )
 
-        loss = encoder_loss + adapter_loss
+        loss = encoder_loss  # + adapter_loss
 
         return {
             "encoder_loss": encoder_loss,
-            "adapter_loss": adapter_loss,
+            # "adapter_loss": adapter_loss,
             "loss": loss,
         }
 
@@ -247,6 +245,9 @@ class LitAdapterModel(LitBaseModel):
             self.model: AdapterModel = AdapterModel.from_unet(self.unet, config.model)
 
         self.model.train()
+        if not config.lightning.get("projection_trainable", True):
+            self.model.projection.requires_grad_(False)
+            self.model.projection.eval()
 
     @override
     def forward(self, batch) -> Dict:
