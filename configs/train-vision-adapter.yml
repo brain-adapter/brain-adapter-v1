@@ -3,8 +3,8 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   val_check_interval: 500
-  max_epochs: 1
-  num_devices: 1
+  max_epochs: 10
+  num_devices: 4
 
   checkpoint:
     dirpath: /root/autodl-tmp/ckpts
@@ -43,7 +43,7 @@ model:
 
 dataset: 
   name: data.dataset.TarImageDataset
-  num_workers: 2 # num_devices * 2
+  num_workers: 8 # num_devices * 2
   resolution: 512
   batch_size: 8
 
