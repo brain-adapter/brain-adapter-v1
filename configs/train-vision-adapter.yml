@@ -32,7 +32,7 @@ lightning:
 
   condition_model:
     name: model.models.VisionModelWithProjection
-    model_path: &condition_model_path /root/autodl-tmp/pretrained/clip-vit-l-14
+    model_path: &condition_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
 
 model:
   diffusion_model_path: *diffusion_model_path
@@ -42,18 +42,14 @@ model:
     num_tokens: 4
 
 dataset: 
-  name: data.dataset.ImageDataset
+  name: data.dataset.TarImageDataset
   num_workers: 2 # num_devices * 2
   resolution: 512
   batch_size: 8
 
-  meta_files:
-    train: /root/autodl-tmp/data/laion-aesthetics/meta-train.json
-    val: /root/autodl-tmp/data/laion-aesthetics/meta-validation.json
-
   image_root_path: 
-    train: /root/autodl-tmp/data/laion-aesthetics/images
-    val: /root/autodl-tmp/data/laion-aesthetics/validation-images
+    train: /root/autodl-tmp/data/laion-aesthetics/train
+    val: /root/autodl-tmp/data/laion-aesthetics/validation
 
   condition_model_path: *condition_model_path
 

@@ -4,9 +4,10 @@ import random
 import json
 
 import torch
+import tarfile
 from torch.utils.data import Dataset
 from omegaconf import DictConfig
-from PIL import Image
+from PIL import Image, TarIO
 from transformers import CLIPImageProcessor, CLIPTokenizer, ViTImageProcessor
 from torchvision import transforms
 
@@ -267,6 +268,95 @@ class ImageDataset(Dataset):
         image_name: str = self.meta[index]["image"]
         image_path = os.path.join(self.image_root_path, image_name)
         raw_image = Image.open(image_path).convert("RGB")
+
+        # for vae encoder
+        pixel_values = self.vae_processor(raw_image) if self.mode == "train" else None
+
+        # for inference
+        ground_truth: Union[torch.FloatTensor, None] = (
+            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
+            if self.mode == "val" or self.mode == "test"
+            else None
+        )
+
+        # for vision condition
+        conditions: torch.FloatTensor = self.cond_processor(
+            images=raw_image, return_tensors="pt"
+        ).pixel_values
+
+        # handle drop to enhance classifier-free guidance
+        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
+
+        data = {"conditions": conditions.squeeze(dim=0)}
+
+        if self.mode == "val" or self.mode == "test":
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
+            data["image_indexes"] = index
+
+        elif self.mode == "train":
+            data["pixel_values"] = pixel_values
+            data["drops"] = drops
+
+        return data
+
+
+class TarImageDataset(Dataset):
+    """
+    Dataset for images zipped in tarfiles
+    """
+
+    def __init__(self, mode: str, config: DictConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.mode = mode
+
+        self.resolution: int = config.resolution
+        self.image_root_path = config.image_root_path[mode]
+
+        tarfiles = [
+            os.path.join(self.image_root_path, file)
+            for file in os.listdir(self.image_root_path)
+            if file.endswith("tar")
+        ]
+        self.meta = []
+        for tar in tarfiles:
+            with tarfile.open(tar, "r") as file:
+                self.meta.extend(
+                    [
+                        {"tar": tar, "image": member.name}
+                        for member in file.getmembers()
+                        if member.name.endswith(config.image_ext)
+                    ]
+                )
+
+        self.vae_processor = (
+            transforms.Compose(
+                [
+                    transforms.Resize(
+                        config.resolution,
+                        interpolation=transforms.InterpolationMode.BILINEAR,
+                    ),
+                    transforms.CenterCrop(self.resolution),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5]),
+                ]
+            )
+            if mode == "train"
+            else None
+        )
+
+        self.cond_processor = CLIPImageProcessor.from_pretrained(
+            config.condition_model_path
+        )
+
+        self.drop_probability: float = config.drop_probability
+
+    def __len__(self):
+        return len(self.meta)
+
+    def __getitem__(self, index) -> Dict:
+        item = self.meta[index]
+        raw_image = Image.open(TarIO.TarIO(item["tar"], item["image"])).convert("RGB")
 
         # for vae encoder
         pixel_values = self.vae_processor(raw_image) if self.mode == "train" else None
