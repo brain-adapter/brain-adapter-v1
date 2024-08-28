@@ -387,7 +387,6 @@ class EEGTransformer(nn.Module):
 
         self.config = config
         self.pool_type = config.get("pool_type", "cls")
-        config.get("subj_token", False)
 
         # learnable pos embedding is more compatible for EEG features
         self.embeddings = EEGEmbeddings(

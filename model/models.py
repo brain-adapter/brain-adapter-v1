@@ -44,8 +44,6 @@ class PreTrainedModel(nn.Module):
                 nn.init.normal_(
                     module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
                 )
-            if module.subject_embedding is not None:
-                nn.init.normal_(module.subject_embedding.weight, std=0.02)
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
 
         elif isinstance(module, EncoderModelWithProjection):
@@ -483,6 +481,8 @@ class AdapterPipeline:
             cond_tensors = self.processor(cond_inputs)
         else:
             raise ValueError(f"Unrecognizable processor type {type(self.processor)}")
+        
+        cond_tensors = cond_tensors.to(self.device, self.dtype)
 
         cond_embeds = self.condition_model(cond_tensors)
         uncond_embeds = torch.zeros_like(cond_embeds)

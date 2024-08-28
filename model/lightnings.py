@@ -148,7 +148,6 @@ class LitBrainKDModel(LitBaseModel):
         loss = encoder_loss  # + adapter_loss
 
         return {
-            "encoder_loss": encoder_loss,
             # "adapter_loss": adapter_loss,
             "loss": loss,
         }
@@ -279,7 +278,7 @@ class LitAdapterModel(LitBaseModel):
             encoder_outputs = self.condition_encoder(conditions)
 
         cond_embeds = torch.stack(
-            (
+            tuple(
                 torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
                 for encoder_output, drop in zip(encoder_outputs, drops)
             ),

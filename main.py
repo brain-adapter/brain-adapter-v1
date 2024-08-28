@@ -76,6 +76,7 @@ def main(config: DictConfig):
         val_check_interval=config.trainer.get("val_check_interval", None),
         check_val_every_n_epoch=config.trainer.get("check_val_every_n_epoch", None),
         enable_checkpointing=ckpt_callback is not None,
+        # strategy="ddp_find_unused_parameters_true",
     )
 
     # resolve task
@@ -93,8 +94,10 @@ def main(config: DictConfig):
         ckpt_callback.last_model_path
     ):
         model = model_class.load_from_checkpoint(ckpt_callback.last_model_path)
+    else:
+        model = None
 
-    if task != Task.TRAIN_ONLY:
+    if task != Task.TRAIN_ONLY and model is not None:
         trainer.test(model, datamodule=datamodule)
 
     # save model
@@ -103,8 +106,7 @@ def main(config: DictConfig):
     if (
         ckpt_callback is not None
         and task != Task.TEST_ONLY
-        and trainer.strategy.is_global_zero
-        and save_directory is not None
+        and trainer.is_global_zero
     ):
         ckpt_paths = ckpt_callback.best_k_models.keys()
 
@@ -112,24 +114,30 @@ def main(config: DictConfig):
             model = model_class.load_from_checkpoint(path, map_location="cpu")
             monitor = Path(path).stem.split("-")[1]
             # save weights and config only
-            save_model(
-                model,
-                os.path.join(save_directory, "-".join([config.logger.name, monitor])),
-            )
+            if save_directory is not None:
+                save_model(
+                    model,
+                    os.path.join(
+                        save_directory, "-".join([config.logger.name, monitor])
+                    ),
+                )
             # remove lightning checkpoints
             os.remove(path)
         if os.path.exists(ckpt_callback.last_model_path):
-            save_model(
-                model,
-                os.path.join(save_directory, "-".join([config.logger.name, "last"])),
-            )
+            if save_directory is not None:
+                save_model(
+                    model,
+                    os.path.join(
+                        save_directory, "-".join([config.logger.name, "last"])
+                    ),
+                )
             os.remove(ckpt_callback.last_model_path)
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument(
-        "--config", default="configs/train-brain-kd-model.yml", type=str
+        "--config", default="configs/train-vision-adapter.yml", type=str
     )
     config = OmegaConf.load(parser.parse_args().config)
     main(config)

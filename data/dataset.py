@@ -234,10 +234,13 @@ class ImageDataset(Dataset):
         self.mode = mode
 
         self.resolution: int = config.resolution
-        self.image_root_path = config.image_root_path[mode]
+        self.image_root_path:str = config.image_root_path[mode]
 
-        with open(config.meta_files[mode], "r") as f:
-            self.meta: List = json.load(f)
+        self.meta:List = [
+            file
+            for file in os.listdir(self.image_root_path)
+            if file.endswith(config.image_ext)
+        ]
 
         self.vae_processor = (
             transforms.Compose(
@@ -265,7 +268,7 @@ class ImageDataset(Dataset):
         return len(self.meta)
 
     def __getitem__(self, index) -> Dict:
-        image_name: str = self.meta[index]["image"]
+        image_name: str = self.meta[index]
         image_path = os.path.join(self.image_root_path, image_name)
         raw_image = Image.open(image_path).convert("RGB")
 

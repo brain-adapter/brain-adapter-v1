@@ -46,6 +46,7 @@ dataset:
   num_workers: 8 # num_devices * 2
   resolution: 512
   batch_size: 8
+  image_ext: jpg
 
   image_root_path: 
     train: /root/autodl-tmp/data/laion-aesthetics/train
