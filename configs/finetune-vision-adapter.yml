@@ -2,9 +2,9 @@ trainer:
   task: train_only
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
-  val_check_interval: &interval 900
-  max_epochs: 10
-  num_devices: 4
+  check_val_every_n_epoch: &interval 1
+  max_epochs: 4
+  num_devices: 1
 
   checkpoint:
     dirpath: /root/autodl-tmp/ckpts
@@ -12,7 +12,7 @@ trainer:
     filename: lit-{step}
     save_top_k: 1
     mode: max
-    every_n_train_steps: *interval
+    every_n_epochs: *interval
     save_last: false
 
 # for Tensorboard logger
@@ -20,13 +20,13 @@ logger:
     save_dir: /root/tf-logs
     sub_dir: logs
     name: vision-adapter
-    version: 0
+    version: ft-imagenet-1k
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-1
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-2
   
   snr_gamma: 5.0
   num_images_per_prompt: 4
@@ -45,14 +45,14 @@ model:
 
 dataset: 
   name: data.dataset.ImageDataset
-  num_workers: 8 # num_devices * 2
+  num_workers: 2 # num_devices * 2
   resolution: 512
   batch_size: 8
-  image_ext: jpg
+  image_ext: JPEG
 
   image_root_path: 
-    train: /root/autodl-tmp/data/laion-aesthetics/train
-    val: /root/autodl-tmp/data/laion-aesthetics/validation
+    train: /root/autodl-tmp/data/eeg-imagenet/images
+    val: /root/autodl-tmp/data/eeg-imagenet/val-images
 
   condition_model_path: *condition_model_path
 
@@ -62,5 +62,5 @@ dataset:
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 1.e-4
+    lr: 1.e-5
     weight_decay: 0.01

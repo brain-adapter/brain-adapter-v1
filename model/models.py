@@ -10,8 +10,8 @@ from diffusers import UNet2DConditionModel, StableDiffusionPipeline, Autoencoder
 from transformers import (
     CLIPImageProcessor,
     CLIPVisionModelWithProjection,
-    CLIPTextModelWithProjection,
 )
+from torchvision.models import VisionTransformer
 from PIL import Image
 
 from model.modules import (
@@ -309,6 +309,36 @@ class VisionModelWithProjection(PreTrainedModel):
         raise ValueError("Cannot save an external pretrained model!")
 
 
+class PytorchVisionModel(PreTrainedModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+        self.vision_model = VisionTransformer(**config)
+
+    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        return self.vision_model(pixel_values)
+
+    @override
+    def save_pretrained(self, save_directory: str):
+        raise ValueError("Cannot save an external pretrained model!")
+
+    @classmethod
+    def from_pretrained(
+        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
+    ):
+        config = cls.load_config(pretrained_model_path, config)
+
+        model = cls(config)
+
+        weights_path = os.path.join(pretrained_model_path, "pytorch_model.pth")
+        weights = torch.load(weights_path)
+
+        model.vision_model.load_state_dict(weights)
+
+        # Set model in evaluation mode to deactivate DropOut modules by default
+        model.eval()
+        return model
+
+
 class AdapterModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
@@ -481,7 +511,7 @@ class AdapterPipeline:
             cond_tensors = self.processor(cond_inputs)
         else:
             raise ValueError(f"Unrecognizable processor type {type(self.processor)}")
-        
+
         cond_tensors = cond_tensors.to(self.device, self.dtype)
 
         cond_embeds = self.condition_model(cond_tensors)

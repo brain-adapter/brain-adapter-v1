@@ -19,8 +19,8 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-kd-model
-    version: 5-95-2
+    name: eeg-model
+    version: 5-95
     default_hp_metric: false
 
 lightning:
@@ -28,7 +28,7 @@ lightning:
 
   pretrained_model_path: null
   teacher_model_path: &teacher_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
-  adapter_model_path: null # TODO
+  adapter_model_path: /root/autodl-tmp/pretrained/vision-adapter-finetune
 
 model:
   name: model.models.EncoderModelWithProjection

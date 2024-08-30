@@ -7,7 +7,7 @@ import torchvision
 import lightning
 from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from torch import nn
 from diffusers import (
     UNet2DConditionModel,
@@ -15,7 +15,6 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
 )
-
 from diffusers.image_processor import VaeImageProcessor
 
 from model.models import (
@@ -24,10 +23,12 @@ from model.models import (
     VisionModelWithProjection,
     AdapterModel,
     PreTrainedModel,
+    PytorchVisionModel,
     BlurReconstructionModel,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
+from model.evaluation import get_evaluation
 
 
 class LitBaseModel(lightning.LightningModule):
@@ -111,12 +112,12 @@ class LitBrainKDModel(LitBaseModel):
         self.teacher_model = VisionModelWithProjection.from_pretrained(
             config.lightning.teacher_model_path
         )
-        # self.adapter_model = AdapterModel.from_pretrained(
-        #     config.lightning.adapter_model_path
-        # )
+        self.adapter_model = AdapterModel.from_pretrained(
+            config.lightning.adapter_model_path
+        )
 
         self.teacher_model.requires_grad_(False)
-        # self.adapter_model.requires_grad_(False)
+        self.adapter_model.requires_grad_(False)
 
         self.model.train()
 
@@ -131,26 +132,38 @@ class LitBrainKDModel(LitBaseModel):
         # get teacher encoder embeds and teacher adapter tokens without gradient
         with torch.no_grad():
             teacher_embeds: torch.Tensor = self.teacher_model(pixel_values)
-            # teacher_adapter_tokens = self.adapter_model(teacher_embeds)
+            teacher_adapter_tokens = self.adapter_model(teacher_embeds)
 
-        # eeg_adapter_tokens = self.adapter_model(eeg_embeds)
+        eeg_adapter_tokens = self.adapter_model(eeg_embeds)
 
-        normed_eeg_embeds = eeg_embeds / eeg_embeds.norm(p=2, dim=-1, keepdim=True)
-        normed_teacher_embeds = teacher_embeds / teacher_embeds.norm(
-            p=2, dim=-1, keepdim=True
+        encoder_loss = (
+            1
+            - nn.functional.cosine_similarity(eeg_embeds, teacher_embeds, dim=-1).mean()
+        )
+        adapter_loss = nn.functional.mse_loss(
+            eeg_adapter_tokens, teacher_adapter_tokens
         )
 
-        encoder_loss = nn.functional.mse_loss(normed_eeg_embeds, normed_teacher_embeds)
-        # adapter_loss = nn.functional.mse_loss(
-        #     eeg_adapter_tokens, teacher_adapter_tokens
-        # )
-
-        loss = encoder_loss  # + adapter_loss
+        loss = encoder_loss + adapter_loss
 
         return {
-            # "adapter_loss": adapter_loss,
+            "adapter_loss": adapter_loss,
+            "encoder_loss": encoder_loss,
             "loss": loss,
         }
+
+    @override
+    def training_step(self, batch, batch_idx) -> Dict:
+        model_outputs: Dict = self(batch)
+        loss = model_outputs["loss"]
+
+        self.log("train_loss", loss, on_epoch=True, on_step=True, prog_bar=True)
+        # log global steps
+        self.log("step", self.global_step, on_step=True, prog_bar=False)
+
+        self.log_dict(model_outputs, on_step=True, on_epoch=True)
+
+        return model_outputs
 
 
 class LitEEGClsModel(LitBaseModel):
@@ -487,3 +500,52 @@ class LitBlurReconModel(LitBaseModel):
     def test_step(self, batch, batch_idx):
         pass
         # TODO implement this method if you need to do test process
+
+
+class LitEvaluationModel(LitBaseModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.model: Union[PytorchVisionModel, VisionModelWithProjection] = get_class(
+            config.evaluation_model.name
+        ).from_pretrained(config.lightning.evaluation_model.pretrained_model_path)
+
+        self.task: str = config.lightning.task.name
+        self.task_params: Dict = OmegaConf.to_object(config.lightning.task.params)
+
+    def forward(self, batch):
+        gen_pixel_values, gt_pixel_values = (
+            batch["gen_pixel_values"],
+            batch["gt_pixel_values"],
+        )
+
+        func = get_evaluation(self.task)
+
+        if self.task == "n_way_top_k_acc":
+            batch_size: int = gen_pixel_values.shape[0]
+            assert batch_size == 1, "Support batch_size 1 ONLY!"
+
+            gt_class_id = (
+                self.model(gt_pixel_values).squeeze(0).softmax(0).argmax().item()
+            )
+            pred_out = self.model(gen_pixel_values).squeeze(0).softmax(0).detach()
+
+            result = func(pred_out, gt_class_id, **self.task_params)
+        elif self.task == "clip_similarity":
+            clip_embeds_gt = self.model(gt_pixel_values)
+            clip_embeds_gen = self.model(gen_pixel_values)
+
+            result = func(clip_embeds_gen, clip_embeds_gt)
+        
+        return result
+
+    def training_step(self, batch, batch_idx) -> Dict:
+        raise RuntimeError("This model can only be involved in evaluation tasks")
+
+    def validation_step(self, batch, batch_idx) -> Dict:
+        raise RuntimeError("This model can only be involved in evaluation tasks")
+
+    def test_step(self, batch, batch_idx) -> Dict:
+        model_outputs = self(batch)
+
+        self.log(self.task, model_outputs, prog_bar=True)

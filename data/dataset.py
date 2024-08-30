@@ -6,9 +6,10 @@ import json
 import torch
 import tarfile
 from torch.utils.data import Dataset
+from torchvision.models.vision_transformer import ViT_H_14_Weights
 from omegaconf import DictConfig
 from PIL import Image, TarIO
-from transformers import CLIPImageProcessor, CLIPTokenizer, ViTImageProcessor
+from transformers import CLIPImageProcessor
 from torchvision import transforms
 
 from model.evaluation import resize_images
@@ -199,9 +200,7 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDatasetForBlurReconstruction):
         )
         raw_image = Image.open(image_path).convert("RGB")
 
-        pixel_values = self.image_processor(
-            images=raw_image, return_tensors="pt"
-        ).pixel_values
+        pixel_values = self.image_processor(raw_image)
         ground_truth = (
             resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
             if self.mode == "val" or self.mode == "test"
@@ -213,12 +212,11 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDatasetForBlurReconstruction):
 
         eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
 
-        data = {
-            "pixel_values": pixel_values.squeeze(dim=0),
-            "image_indexes": item["image"],
-            "conditions": eeg_inputs,
-            "drops": drops,
-        }
+        data = {"conditions": eeg_inputs}
+
+        if self.mode == "train":
+            data["drops"] = drops
+            data["pixel_values"] = pixel_values
 
         if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)
@@ -234,9 +232,9 @@ class ImageDataset(Dataset):
         self.mode = mode
 
         self.resolution: int = config.resolution
-        self.image_root_path:str = config.image_root_path[mode]
+        self.image_root_path: str = config.image_root_path[mode]
 
-        self.meta:List = [
+        self.meta: List = [
             file
             for file in os.listdir(self.image_root_path)
             if file.endswith(config.image_ext)
@@ -390,3 +388,54 @@ class TarImageDataset(Dataset):
             data["drops"] = drops
 
         return data
+
+
+class GeneratedImageDataset(Dataset):
+    """
+    For inference of generated images by models
+    """
+
+    def __init__(self, mode: str, config: DictConfig) -> None:
+        super().__init__()
+        self.config
+        self.mode = mode
+
+        self.image_root_path: str = config.image_root_path[mode]
+        self.gt_image_root_path: str = config.gt_image_root_path
+
+        self.image_processor = CLIPImageProcessor.from_pretrained(
+            config.evaluation_model_path
+        )
+
+        self.meta: List = [
+            file
+            for file in os.listdir(self.image_root_path)
+            if file.endswith(config.image_ext)
+        ]
+
+        with open("image-list.json", "r") as f:
+            self.index2str: List = json.load(f)
+
+    def __len__(self):
+        return len(self.meta)
+
+    def __getitem__(self, index) -> Dict:
+        image_name: str = self.meta[index]
+        image_path = os.path.join(self.image_root_path, image_name)
+        gen_image: Image.Image = Image.open(image_path).convert("RGB")
+        gen_pixel_values = self.image_processor(
+            gen_image, return_tensors="pt"
+        ).pixel_values.squeeze(dim=0)
+
+        image_index: int = int(image_name.split("-")[0])
+        gt_image_name: str = self.index2str[image_index]
+        gt_image_path = os.path.join(self.gt_image_root_path, gt_image_name)
+        gt_image: Image.Image = Image.open(gt_image_path).convert("RGB")
+        gt_pixel_values = self.image_processor(
+            gt_image, return_tensors="pt"
+        ).pixel_values.squeeze(dim=0)
+
+        return {
+            "gen_pixel_values": gen_pixel_values,
+            "gt_pixel_values": gt_pixel_values,
+        }

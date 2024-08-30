@@ -1,7 +1,7 @@
 trainer:
   task: train_and_test_with_last
   seed: 2024
-  # save_directory: /root/autodl-tmp/pretrained
+  save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
   max_epochs: 4
   num_devices: 1
@@ -13,27 +13,30 @@ trainer:
     save_top_k: 1
     mode: max
     every_n_epochs: 1
-    save_last: false
+    save_last: true
 
 # for Tensorboard logger
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: eeg-adapter
+    name: brain-adapter
     version: 5-95
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitAdapterModel
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-step=54999/adapter
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-finetune
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
+
   snr_gamma: 5.0
   num_images_per_prompt: 4
   num_inference_steps: 50
 
-  condition_encoder:
+  projection_trainable: false
+
+  condition_model:
     name: model.models.EncoderModelWithProjection
-    pretrained_model_path: /root/autodl-tmp/pretrained/brain-vision-model
+    model_path: /root/autodl-tmp/pretrained/eeg-model
 
 model:
   projection_config:
@@ -43,22 +46,24 @@ model:
 
 dataset: 
   name: data.dataset.EEGImageNetDatasetForGeneration
-  num_workers: 4 # num_devices * 4
+  num_workers: 2 # num_devices * 4
   resolution: 512
-  batch_size: 4
+  batch_size: 8
   image_ext: JPEG
-  subject: 4
+  subject: 0
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   diffusion_model_path: *diffusion_model_path
 
   merge_train_and_val: true
 
+  drop_probability: 0.1
+
 # constant learning rate
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 1.e-5
+    lr: 2.e-5
     weight_decay: 0.01

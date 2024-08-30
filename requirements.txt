@@ -1,0 +1,10 @@
+torch>=2.1.0
+lightning==2.3.1
+torchmetrics==0.9.2
+tensorboard
+omegaconf
+pathlib2
+transformers
+diffusers==0.27.2
+lightning-flash
+accelerate
