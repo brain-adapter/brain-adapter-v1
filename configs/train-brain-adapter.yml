@@ -3,7 +3,7 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
-  max_epochs: 4
+  max_epochs: 2
   num_devices: 1
 
   checkpoint:
@@ -19,7 +19,7 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-adapter
+    name: brain-adapter-4
     version: 5-95
     default_hp_metric: false
 
@@ -30,13 +30,14 @@ lightning:
 
   snr_gamma: 5.0
   num_images_per_prompt: 4
+  num_validation_images: 8
   num_inference_steps: 50
 
   projection_trainable: false
 
   condition_model:
     name: model.models.EncoderModelWithProjection
-    model_path: /root/autodl-tmp/pretrained/eeg-model
+    model_path: /root/autodl-tmp/pretrained/eeg-model-finetune-4
 
 model:
   projection_config:
@@ -48,18 +49,18 @@ dataset:
   name: data.dataset.EEGImageNetDatasetForGeneration
   num_workers: 2 # num_devices * 4
   resolution: 512
-  batch_size: 8
+  batch_size: 4
   image_ext: JPEG
-  subject: 0
+  subject: 4
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   diffusion_model_path: *diffusion_model_path
 
   merge_train_and_val: true
 
-  drop_probability: 0.1
+  drop_probability: 0.05
 
 # constant learning rate
 optimizer:

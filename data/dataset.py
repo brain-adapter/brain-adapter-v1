@@ -1,19 +1,19 @@
 import os
-from typing import Dict, Optional, Union, List
 import random
 import json
+from typing import Dict, Optional, Union, List
+
 
 import torch
 import tarfile
 from torch.utils.data import Dataset
-from torchvision.models.vision_transformer import ViT_H_14_Weights
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from PIL import Image, TarIO
 from transformers import CLIPImageProcessor
 from torchvision import transforms
+from torchvision.transforms._presets import ImageClassification, InterpolationMode
 
 from model.evaluation import resize_images
-from model.modules import get_class
 
 
 class EEGProcessor:
@@ -98,8 +98,8 @@ class EEGImageNetDataset(Dataset):
         )
 
         self.image_processor = (
-            CLIPImageProcessor.from_pretrained(config.teacher_model_path)
-            if config.get("teacher_model_path", None) is not None
+            CLIPImageProcessor.from_pretrained(config.vision_model_path)
+            if config.get("vision_model_path", None) is not None
             else None
         )
 
@@ -126,6 +126,7 @@ class EEGImageNetDataset(Dataset):
             "pixel_values": vision_inputs,
             "labels": item["label"],
             "subjects": item["subject"],
+            "image_indexes": item["image"],
         }
 
         return data
@@ -148,7 +149,7 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
         )
         self.resolution: int = config.resolution
 
-        if mode == "val" or self.mode == "test":
+        if mode == "val":
             self.splitter = random.sample(
                 self.splitter, config.get("num_validation_images", 4)
             )
@@ -397,15 +398,33 @@ class GeneratedImageDataset(Dataset):
 
     def __init__(self, mode: str, config: DictConfig) -> None:
         super().__init__()
-        self.config
+        self.config = config
         self.mode = mode
 
         self.image_root_path: str = config.image_root_path[mode]
         self.gt_image_root_path: str = config.gt_image_root_path
+        self.gt_image_ext = config.gt_image_ext
 
-        self.image_processor = CLIPImageProcessor.from_pretrained(
-            config.evaluation_model_path
-        )
+        evaluation_model_name = config.evaluation_model.name
+
+        if evaluation_model_name == "model.models.PytorchVisionModel":
+            model_config = OmegaConf.load(
+                os.path.join(
+                    config.evaluation_model.pretrained_model_path, "config.yml"
+                )
+            )
+            self.image_processor = ImageClassification(
+                crop_size=model_config.image_size,
+                resize_size=model_config.image_size,
+                interpolation=InterpolationMode.BICUBIC,
+            )
+
+        elif evaluation_model_name == "model.models.VisionModelWithProjection":
+            self.image_processor = CLIPImageProcessor.from_pretrained(
+                config.evaluation_model.pretrained_model_path
+            )
+        else:
+            raise ValueError(f"Unsupport evaluation model: [{evaluation_model_name}]")
 
         self.meta: List = [
             file
@@ -413,27 +432,33 @@ class GeneratedImageDataset(Dataset):
             if file.endswith(config.image_ext)
         ]
 
-        with open("image-list.json", "r") as f:
-            self.index2str: List = json.load(f)
-
     def __len__(self):
         return len(self.meta)
+
+    def process_images(self, images: Image.Image) -> torch.Tensor:
+        if isinstance(self.image_processor, CLIPImageProcessor):
+            pixel_values = self.image_processor(
+                images, return_tensors="pt"
+            ).pixel_values.squeeze(dim=0)
+        elif isinstance(self.image_processor, ImageClassification):
+            pixel_values = self.image_processor(images)
+        else:
+            raise RuntimeError(
+                f"Invalid image processor type [{type(self.image_processor)}]"
+            )
+
+        return pixel_values
 
     def __getitem__(self, index) -> Dict:
         image_name: str = self.meta[index]
         image_path = os.path.join(self.image_root_path, image_name)
         gen_image: Image.Image = Image.open(image_path).convert("RGB")
-        gen_pixel_values = self.image_processor(
-            gen_image, return_tensors="pt"
-        ).pixel_values.squeeze(dim=0)
+        gen_pixel_values = self.process_images(gen_image)
 
-        image_index: int = int(image_name.split("-")[0])
-        gt_image_name: str = self.index2str[image_index]
+        gt_image_name: str = ".".join([image_name.split("-")[0], self.gt_image_ext])
         gt_image_path = os.path.join(self.gt_image_root_path, gt_image_name)
         gt_image: Image.Image = Image.open(gt_image_path).convert("RGB")
-        gt_pixel_values = self.image_processor(
-            gt_image, return_tensors="pt"
-        ).pixel_values.squeeze(dim=0)
+        gt_pixel_values = self.process_images(gt_image)
 
         return {
             "gen_pixel_values": gen_pixel_values,

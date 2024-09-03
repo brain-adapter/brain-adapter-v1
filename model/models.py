@@ -16,7 +16,6 @@ from PIL import Image
 
 from model.modules import (
     AttnProcessor,
-    MixedAttnProcessor,
     VisionAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,

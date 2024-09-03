@@ -1,10 +1,12 @@
 import os
-from typing import Dict, Optional, Union
+import io
+from typing import Dict, Optional, Union, List
 from typing_extensions import override
 
 import torch
 import torchvision
 import lightning
+import matplotlib.pyplot as plt
 from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
 from omegaconf import DictConfig, OmegaConf
@@ -35,6 +37,7 @@ class LitBaseModel(lightning.LightningModule):
     def __init__(self, config: DictConfig):
         super().__init__()
         self.config = config
+        self.log_keys: List[str] = config.lightning.get("log_keys", [])
         self.save_hyperparameters()
 
         self.model: PreTrainedModel = None
@@ -53,31 +56,58 @@ class LitBaseModel(lightning.LightningModule):
 
     def training_step(self, batch, batch_idx) -> Dict:
         model_outputs: Dict = self(batch)
-        loss = model_outputs["loss"]
+        loss = model_outputs.pop("loss")
 
-        self.log("train_loss", loss, on_epoch=True, on_step=True, prog_bar=True)
+        model_outputs = {
+            f"train_{key}": model_outputs[key]
+            for key in model_outputs.keys()
+            if key in self.log_keys
+        }
+
         # log global steps
         self.log("step", self.global_step, on_step=True, prog_bar=False)
+        self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True)
 
-        return model_outputs
+        if len(model_outputs) > 0:
+            self.log_dict(model_outputs, prog_bar=False, on_step=True, on_epoch=True)
+
+        return loss
 
     @rank_zero_only
     def validation_step(self, batch, batch_idx) -> Dict:
-        model_outputs = self(batch)
-        loss = model_outputs["loss"]
+        model_outputs: Dict = self(batch)
+        loss = model_outputs.pop("loss")
 
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
+        model_outputs = {
+            f"val_{key}": model_outputs[key]
+            for key in model_outputs.keys()
+            if key in self.log_keys
+        }
+        # log global steps
+        self.log("val_loss", loss, prog_bar=True, on_epoch=True)
 
-        return model_outputs
+        if len(model_outputs) > 0:
+            self.log_dict(model_outputs, prog_bar=False, on_epoch=True)
+
+        return loss
 
     @rank_zero_only
     def test_step(self, batch, batch_idx) -> Dict:
-        model_outputs = self(batch)
-        loss = model_outputs["loss"]
+        model_outputs: Dict = self(batch)
+        loss = model_outputs.pop("loss")
 
-        self.log("test_loss", loss, on_epoch=True, prog_bar=True)
+        model_outputs = {
+            f"test_{key}": model_outputs[key]
+            for key in model_outputs.keys()
+            if key in self.log_keys
+        }
+        # log global steps
+        self.log("test_loss", loss, prog_bar=True, on_epoch=True)
 
-        return model_outputs
+        if len(model_outputs) > 0:
+            self.log_dict(model_outputs, prog_bar=False, on_epoch=True)
+
+        return loss
 
     def configure_optimizers(self):
         config = self.config.optimizer
@@ -109,61 +139,87 @@ class LitBrainKDModel(LitBaseModel):
         else:
             self.model = EncoderModelWithProjection(config=config.model)
 
-        self.teacher_model = VisionModelWithProjection.from_pretrained(
-            config.lightning.teacher_model_path
-        )
-        self.adapter_model = AdapterModel.from_pretrained(
-            config.lightning.adapter_model_path
+        self.vision_model = VisionModelWithProjection.from_pretrained(
+            config.lightning.vision_model_path
         )
 
-        self.teacher_model.requires_grad_(False)
-        self.adapter_model.requires_grad_(False)
+        self.vision_model.requires_grad_(False)
 
         self.model.train()
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, pixel_values = (
+        eeg_values, pixel_values, labels = (
             batch["eeg_values"],
             batch["pixel_values"],
+            batch["labels"],
         )
+        batch_size = eeg_values.shape[0]
         eeg_embeds: torch.Tensor = self.model(eeg_values)
 
         # get teacher encoder embeds and teacher adapter tokens without gradient
         with torch.no_grad():
-            teacher_embeds: torch.Tensor = self.teacher_model(pixel_values)
-            teacher_adapter_tokens = self.adapter_model(teacher_embeds)
+            vision_embeds: torch.Tensor = self.vision_model(pixel_values)
 
-        eeg_adapter_tokens = self.adapter_model(eeg_embeds)
-
-        encoder_loss = (
-            1
-            - nn.functional.cosine_similarity(eeg_embeds, teacher_embeds, dim=-1).mean()
-        )
-        adapter_loss = nn.functional.mse_loss(
-            eeg_adapter_tokens, teacher_adapter_tokens
+        kd_loss = nn.functional.cosine_embedding_loss(
+            eeg_embeds,
+            vision_embeds,
+            target=torch.ones(batch_size, device=eeg_embeds.device),
         )
 
-        loss = encoder_loss + adapter_loss
+        loss = kd_loss
 
         return {
-            "adapter_loss": adapter_loss,
-            "encoder_loss": encoder_loss,
             "loss": loss,
+            "eeg_embeds": eeg_embeds,
+            "vision_embeds": vision_embeds,
+            "kd_loss": kd_loss,
         }
 
-    @override
-    def training_step(self, batch, batch_idx) -> Dict:
+    @rank_zero_only
+    def validation_step(self, batch, batch_idx) -> Dict:
         model_outputs: Dict = self(batch)
-        loss = model_outputs["loss"]
+        loss, eeg_embeds, vision_embeds, labels = (
+            model_outputs["loss"],
+            model_outputs["eeg_embeds"],
+            model_outputs["vision_embeds"],
+            batch["labels"],
+        )
 
-        self.log("train_loss", loss, on_epoch=True, on_step=True, prog_bar=True)
-        # log global steps
-        self.log("step", self.global_step, on_step=True, prog_bar=False)
+        batch_size = len(labels)
 
-        self.log_dict(model_outputs, on_step=True, on_epoch=True)
+        self.log("val_loss", loss, prog_bar=True, on_epoch=True)
 
-        return model_outputs
+        eeg_embeds = eeg_embeds / eeg_embeds.norm(p=2, dim=-1, keepdim=True)
+        vision_embeds = vision_embeds / vision_embeds.norm(p=2, dim=-1, keepdim=True)
+
+        clip_logits = torch.matmul(eeg_embeds, vision_embeds.t())
+        clip_logits = clip_logits.detach().cpu()
+
+        plt.figure(figsize=(16, 16))
+        plt.imshow(clip_logits, cmap="viridis")
+
+        plt.xlabel("vision-classes")
+        plt.xticks(range(batch_size), labels.detach().cpu().tolist())
+
+        plt.ylabel("eeg-classes")
+        plt.yticks(range(batch_size), labels.detach().cpu().tolist())
+
+        plt.colorbar()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+
+        self.logger.experiment.add_image(
+            f"clip-logits-{batch_idx}",
+            plt.imread(buf),
+            self.global_step,
+            dataformats="HWC",
+        )
+        plt.close()
+
+        return loss
 
 
 class LitEEGClsModel(LitBaseModel):
@@ -257,9 +313,6 @@ class LitAdapterModel(LitBaseModel):
             self.model: AdapterModel = AdapterModel.from_unet(self.unet, config.model)
 
         self.model.train()
-        if not config.lightning.get("projection_trainable", True):
-            self.model.projection.requires_grad_(False)
-            self.model.projection.eval()
 
     @override
     def forward(self, batch) -> Dict:
@@ -398,17 +451,17 @@ class LitAdapterModel(LitBaseModel):
     @rank_zero_only
     def test_step(self, batch, batch_idx):
         # parameters for generation process
-        num_images_per_prompt = self.config.lightning.get("num_images_per_prompt", None)
+        num_images_per_prompt = self.config.lightning.get("num_images_per_prompt", 1)
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
-        batch_size = self.config.dataset.batch_size
-        save_dir = self.logger.save_dir
+        save_dir = self.logger.log_dir
 
         images: Image.Image = self.generate(
             batch, seed, num_inference_steps, num_images_per_prompt
         )
         image_indexes = batch["image_indexes"]
+        batch_size = len(image_indexes)
 
         if save_dir is not None:
             save_directory = os.path.join(save_dir, "images")
@@ -507,7 +560,7 @@ class LitEvaluationModel(LitBaseModel):
         super().__init__(config)
 
         self.model: Union[PytorchVisionModel, VisionModelWithProjection] = get_class(
-            config.evaluation_model.name
+            config.lightning.evaluation_model.name
         ).from_pretrained(config.lightning.evaluation_model.pretrained_model_path)
 
         self.task: str = config.lightning.task.name
@@ -530,13 +583,13 @@ class LitEvaluationModel(LitBaseModel):
             )
             pred_out = self.model(gen_pixel_values).squeeze(0).softmax(0).detach()
 
-            result = func(pred_out, gt_class_id, **self.task_params)
+            result = torch.tensor(func(pred_out, gt_class_id, **self.task_params))
         elif self.task == "clip_similarity":
             clip_embeds_gt = self.model(gt_pixel_values)
             clip_embeds_gen = self.model(gen_pixel_values)
 
             result = func(clip_embeds_gen, clip_embeds_gt)
-        
+
         return result
 
     def training_step(self, batch, batch_idx) -> Dict:

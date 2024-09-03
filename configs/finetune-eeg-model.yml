@@ -3,7 +3,7 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: &interval 1
-  max_epochs: &max_epochs 50
+  max_epochs: 5
   num_devices: 1
 
   checkpoint:
@@ -19,47 +19,31 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: eeg-model
+    name: eeg-model-finetune-4
     version: 5-95
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitBrainKDModel
 
-  pretrained_model_path: null
+  pretrained_model_path: /root/autodl-tmp/pretrained/eeg-model
   vision_model_path: &vision_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
 
-model:
-  name: model.models.EncoderModelWithProjection
-  encoder_name: model.modules.EEGTransformer
-
-  num_channels: 128
-  num_samples: 440
-  patch_size: 4
-  hidden_size: 768
-  num_layers: 6
-  num_attention_heads: 12
-  mlp_ratio: 1.0
-  dropout: 0.1
-
-  projection_dim: 768
-
-  output_key: 0
-  pool_type: cls
+model: null
 
 
 dataset: 
   name: data.dataset.EEGImageNetDataset
 
   num_workers: 2 # num_devices * 2
-  subject: 0 # 0 means using data of all subjects
-  batch_size: 16
+  subject: 4
+  batch_size: 4
 
   image_ext: JPEG
 
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
   vision_model_path: *vision_model_path
 
   merge_train_and_val: true
@@ -68,13 +52,5 @@ dataset:
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 2.e-4
+    lr: 2.e-5
     weight_decay: 0.05
-
-scheduler:
-  name: flash.core.optimizers.LinearWarmupCosineAnnealingLR
-  params:
-    warmup_epochs: 5
-    max_epochs: *max_epochs
-    warmup_start_lr: 4.e-5
-    eta_min: 2.e-5

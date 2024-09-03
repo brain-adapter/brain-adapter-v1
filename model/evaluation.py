@@ -92,8 +92,8 @@ def n_way_top_k_acc(pred:torch.Tensor, class_id:int, n_way:int, num_trials=40, t
         acc = torchmetrics.functional.accuracy(
             pred_picked.unsqueeze(0), torch.tensor([0], device=pred.device), top_k=top_k
         )
-        acc_list.append(acc)
-    return torch.mean(acc_list)
+        acc_list.append(acc.cpu())
+    return np.mean(acc_list)
 
 
 @torch.inference_mode()

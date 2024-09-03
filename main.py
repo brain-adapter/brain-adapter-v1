@@ -94,7 +94,7 @@ def main(config: DictConfig):
         ckpt_callback.last_model_path
     ):
         model = model_class.load_from_checkpoint(ckpt_callback.last_model_path)
-    else:
+    elif task == Task.TRAIN_ONLY:
         model = None
 
     if task != Task.TRAIN_ONLY and model is not None:

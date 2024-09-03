@@ -3,7 +3,7 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: &interval 1
-  max_epochs: 4
+  max_epochs: 10
   num_devices: 1
 
   checkpoint:
@@ -20,13 +20,13 @@ logger:
     save_dir: /root/tf-logs
     sub_dir: logs
     name: vision-adapter
-    version: ft-imagenet-1k
+    version: finetune
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-2
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-1
   
   snr_gamma: 5.0
   num_images_per_prompt: 4
@@ -56,11 +56,11 @@ dataset:
 
   condition_model_path: *condition_model_path
 
-  drop_probability: 0.1
+  drop_probability: 0.05
 
 # constant learning rate
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 1.e-5
+    lr: 2.e-5
     weight_decay: 0.01
