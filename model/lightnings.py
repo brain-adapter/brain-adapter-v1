@@ -17,16 +17,14 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
 )
-from diffusers.image_processor import VaeImageProcessor
+
 
 from model.models import (
-    EncoderModel,
-    EncoderModelWithProjection,
-    VisionModelWithProjection,
+    TransformerEncoderModel,
+    CLIPVisionModel,
     AdapterModel,
     PreTrainedModel,
     PytorchVisionModel,
-    BlurReconstructionModel,
     AdapterPipeline,
 )
 from model.modules import compute_snr, get_class
@@ -133,14 +131,12 @@ class LitBrainKDModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = EncoderModelWithProjection.from_pretrained(
-                pretrained_model_path
-            )
+            self.model = TransformerEncoderModel.from_pretrained(pretrained_model_path)
         else:
-            self.model = EncoderModelWithProjection(config=config.model)
+            self.model = TransformerEncoderModel(config=config.model)
 
-        self.vision_model = VisionModelWithProjection.from_pretrained(
-            config.lightning.vision_model_path
+        self.vision_model = CLIPVisionModel.from_pretrained(
+            config.lightning.clip_model_path
         )
 
         self.vision_model.requires_grad_(False)
@@ -149,31 +145,27 @@ class LitBrainKDModel(LitBaseModel):
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, pixel_values, labels = (
+        eeg_values, pixel_values = (
             batch["eeg_values"],
             batch["pixel_values"],
-            batch["labels"],
         )
         batch_size = eeg_values.shape[0]
         eeg_embeds: torch.Tensor = self.model(eeg_values)
 
-        # get teacher encoder embeds and teacher adapter tokens without gradient
+        # get teacher encoder embeds
         with torch.no_grad():
             vision_embeds: torch.Tensor = self.vision_model(pixel_values)
 
-        kd_loss = nn.functional.cosine_embedding_loss(
+        loss = nn.functional.cosine_embedding_loss(
             eeg_embeds,
             vision_embeds,
             target=torch.ones(batch_size, device=eeg_embeds.device),
         )
 
-        loss = kd_loss
-
         return {
             "loss": loss,
             "eeg_embeds": eeg_embeds,
             "vision_embeds": vision_embeds,
-            "kd_loss": kd_loss,
         }
 
     @rank_zero_only
@@ -228,11 +220,9 @@ class LitEEGClsModel(LitBaseModel):
 
         pretrained_model_path = config.lightning.get("pretrained_model_path", None)
         if pretrained_model_path is not None:
-            self.model = EncoderModelWithProjection.from_pretrained(
-                pretrained_model_path
-            )
+            self.model = TransformerEncoderModel.from_pretrained(pretrained_model_path)
         else:
-            self.model = EncoderModelWithProjection(config=config.model)
+            self.model = TransformerEncoderModel(config=config.model)
         self.model.train()
 
     @override
@@ -292,10 +282,10 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="scheduler"
         )
 
-        self.condition_encoder: Union[
-            VisionModelWithProjection, EncoderModelWithProjection
-        ] = get_class(config.lightning.condition_model.name).from_pretrained(
-            config.lightning.condition_model.model_path
+        self.condition_encoder: Union[CLIPVisionModel, TransformerEncoderModel] = (
+            get_class(config.lightning.condition_model.name).from_pretrained(
+                config.lightning.condition_model.model_path
+            )
         )
 
         self.unet.requires_grad_(False)
@@ -477,89 +467,11 @@ class LitAdapterModel(LitBaseModel):
                     image.save(save_path)
 
 
-class LitBlurReconModel(LitBaseModel):
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-
-        pretrained_model_path = config.lightning.get("pretrained_model_path", None)
-        if pretrained_model_path is not None:
-            self.model = BlurReconstructionModel.from_pretrained(pretrained_model_path)
-        else:
-            self.model = BlurReconstructionModel(config=config.model)
-
-        self.eeg_model = EncoderModel.from_pretrained(config.lightning.eeg_model_path)
-        self.vae = AutoencoderKL.from_pretrained(
-            config.lightning.diffusion_model_path, subfolder="vae"
-        )
-
-        self.eeg_model.requires_grad_(False)
-        self.vae.requires_grad_(False)
-
-        self.image_processor = VaeImageProcessor(
-            vae_scale_factor=self.vae.config.scaling_factor
-        )
-
-        self.model.train()
-
-    @override
-    def forward(self, batch):
-        eeg_values, pixel_values = (batch["eeg_values"], batch["pixel_values"])
-
-        # pixel_values = kornia.filters.median_blur(pixel_values, (7, 7))
-
-        with torch.no_grad():
-            latents: torch.Tensor = self.vae.encode(pixel_values).latent_dist.sample()
-            latents: torch.Tensor = latents * self.vae.config.scaling_factor
-
-            eeg_embeds = self.eeg_model(eeg_values)
-
-        latents_pred = self.model(eeg_embeds)
-
-        loss = nn.functional.l1_loss(latents_pred, latents)
-
-        return {"loss": loss, "latents_pred": latents_pred}
-
-    @override
-    @rank_zero_only
-    def validation_step(self, batch, batch_idx):
-        model_outputs = self(batch)
-
-        loss, latents = (model_outputs["loss"], model_outputs["latents_pred"])
-
-        self.log("val_loss", loss, on_epoch=True, prog_bar=True)
-
-        with torch.inference_mode():
-            images = self.vae.decode(
-                latents / self.vae.config.scaling_factor, return_dict=False
-            )[0]
-
-        images = self.image_processor.postprocess(
-            images, output_type="pt", do_denormalize=[True] * images.shape[0]
-        )
-
-        images = images.cpu()
-        ground_truth = batch["ground_truth"].cpu()
-
-        image_grid = torchvision.utils.make_grid(
-            torch.cat([ground_truth, images], dim=0), nrow=images.shape[0], padding=4
-        )
-        # log images to tensorboard logger
-        self.logger.experiment.add_image(
-            f"image_grid-{batch_idx}", image_grid, self.global_step, dataformats="CHW"
-        )
-
-    @override
-    @rank_zero_only
-    def test_step(self, batch, batch_idx):
-        pass
-        # TODO implement this method if you need to do test process
-
-
 class LitEvaluationModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.model: Union[PytorchVisionModel, VisionModelWithProjection] = get_class(
+        self.model: Union[PytorchVisionModel, CLIPVisionModel] = get_class(
             config.lightning.evaluation_model.name
         ).from_pretrained(config.lightning.evaluation_model.pretrained_model_path)
 

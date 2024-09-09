@@ -6,7 +6,7 @@ from typing_extensions import override
 import torch
 from omegaconf import DictConfig, OmegaConf
 from torch import nn
-from diffusers import UNet2DConditionModel, StableDiffusionPipeline, AutoencoderKL
+from diffusers import UNet2DConditionModel, StableDiffusionPipeline
 from transformers import (
     CLIPImageProcessor,
     CLIPVisionModelWithProjection,
@@ -24,7 +24,6 @@ from model.modules import (
     get_device,
 )
 from data.dataset import EEGProcessor
-from model.evaluation import pt_to_numpy, numpy_to_pil
 
 
 class PreTrainedModel(nn.Module):
@@ -45,7 +44,7 @@ class PreTrainedModel(nn.Module):
                 )
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
 
-        elif isinstance(module, EncoderModelWithProjection):
+        elif isinstance(module, TransformerEncoderModel):
             nn.init.normal_(
                 module.projection.weight,
                 std=module.embed_dim**-0.5,
@@ -115,58 +114,6 @@ class PreTrainedModel(nn.Module):
         self.config = config
 
 
-class JointModel(PreTrainedModel):
-    """
-    Wrapper for multi-pretrained models
-    """
-
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-
-        self.models: Mapping[str, PreTrainedModel] = nn.ModuleDict(
-            {
-                key: get_class(model_config.name)(model_config)
-                for key, model_config in config.items()
-            }
-        )
-
-    def save_pretrained(self, save_directory: str):
-        model_indexes: Dict[str, str] = {}
-        for key, model in self.models.items():
-            sub_folder = os.path.join(save_directory, key)
-
-            model.save_pretrained(sub_folder)
-            model_indexes[key] = {
-                "model_path": sub_folder,
-                "model_name": self.config[key].name,
-            }
-
-        index_config = OmegaConf.create(model_indexes)
-        index_path = os.path.join(save_directory, "model_index.yml")
-
-        OmegaConf.save(index_config, index_path)
-
-    @override
-    @classmethod
-    def from_pretrained(
-        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
-    ):
-        index_path = os.path.join(pretrained_model_path, "model_index.yml")
-        index_config = OmegaConf.load(index_path)
-
-        models: Dict[str, PreTrainedModel] = {}
-        configs = {}
-        for key, item in index_config.items():
-            models[key] = get_class(item.model_name).from_pretrained(item.model_path)
-            configs[key] = models[key].config
-
-        joint_model = cls(OmegaConf.create(configs))
-        models: nn.ModuleDict = nn.ModuleDict(models)
-        joint_model.models.load_state_dict(models.state_dict())
-
-        return joint_model
-
-
 class EncoderModel(PreTrainedModel):
     """
     Encoder model wrapper
@@ -177,48 +124,17 @@ class EncoderModel(PreTrainedModel):
 
         self.encoder = get_class(config.encoder_name)(config)
 
-        self.output_key: Union[int, str] = config.get("output_key", 1)
+        self.output_key: Union[int, str] = config.get("output_key", None)
 
         self.apply(self._init_weights)
 
     def forward(self, inputs: torch.Tensor, **kwargs):
-        encoder_outputs = self.encoder(inputs, output_attentions=False, **kwargs)
+        encoder_outputs = self.encoder(inputs, **kwargs)
 
-        return encoder_outputs[self.output_key]
+        if self.output_key is not None:
+            encoder_outputs = encoder_outputs[self.output_key]
 
-    @torch.inference_mode()
-    def get_attn_maps(self, inputs: torch.Tensor, **kwargs):
-        encoder_outputs = self.encoder(inputs, output_attentions=True, **kwargs)
-
-        attn_maps = encoder_outputs[2]
-
-        return attn_maps
-
-    @override
-    @classmethod
-    def from_pretrained(
-        cls,
-        pretrained_model_path: Optional[str] = None,
-        config: Optional[DictConfig] = None,
-    ) -> PreTrainedModel:
-        config = cls.load_config(pretrained_model_path, config)
-
-        model: nn.Module = cls(config)
-        model_path = os.path.join(pretrained_model_path, "pytorch_model.bin")
-
-        loaded_ckpt = copy.deepcopy(torch.load(model_path, map_location="cpu"))
-
-        model_keys = list(model.state_dict().keys())
-
-        model_ckpt = {
-            key: value for key, value in loaded_ckpt.items() if key in model_keys
-        }
-
-        model.load_state_dict(model_ckpt)
-
-        model.eval()
-
-        return model
+        return encoder_outputs
 
 
 class ExternalModel(PreTrainedModel):
@@ -237,7 +153,7 @@ class ExternalModel(PreTrainedModel):
         return self.model(**inputs)
 
 
-class EncoderModelWithProjection(PreTrainedModel):
+class TransformerEncoderModel(PreTrainedModel):
     """
     Encoder model wrapper with linear projection
     """
@@ -269,15 +185,16 @@ class EncoderModelWithProjection(PreTrainedModel):
         return attn_maps
 
 
-class VisionModelWithProjection(PreTrainedModel):
+class CLIPVisionModel(PreTrainedModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.vision_model = CLIPVisionModelWithProjection.from_pretrained(
-            config.model_path
+            config.clip_model_path
         )
 
     def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> torch.Tensor:
-        image_embeds = self.vision_model(pixel_values)[0]
+        with torch.no_grad():
+            image_embeds = self.vision_model(pixel_values)[0]
 
         return image_embeds
 
@@ -296,7 +213,7 @@ class VisionModelWithProjection(PreTrainedModel):
         pretrained_model_path: Optional[str] = None,
         config: Optional[DictConfig] = None,
     ) -> PreTrainedModel:
-        config = OmegaConf.create({"model_path": pretrained_model_path})
+        config = OmegaConf.create({"clip_model_path": pretrained_model_path})
 
         model = cls(config)
         # Set model in evaluation mode to deactivate DropOut modules by default
@@ -305,7 +222,7 @@ class VisionModelWithProjection(PreTrainedModel):
 
     @override
     def save_pretrained(self, save_directory: str):
-        raise ValueError("Cannot save an external pretrained model!")
+        raise NotImplementedError("Cannot save an external pretrained model!")
 
 
 class PytorchVisionModel(PreTrainedModel):
@@ -457,9 +374,7 @@ class AdapterPipeline:
     def __init__(
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
-        condition_model: Union[
-            EncoderModelWithProjection, VisionModelWithProjection, None
-        ] = None,
+        condition_model: Union[TransformerEncoderModel, CLIPVisionModel, None] = None,
         adapter_model: Optional[AdapterModel] = None,
         processor: Union[EEGProcessor, CLIPImageProcessor, None] = None,
         device: Union[str, torch.device, None] = None,
@@ -580,103 +495,3 @@ class AdapterPipeline:
         ).images
 
         return images
-
-
-class BlurReconstructionModel(JointModel):
-    """
-    For blur reconstruction
-    """
-
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        # perceiver resampler, EncoderModel
-        resampler = self.models["resampler"]
-        resampler_results: torch.Tensor = resampler(inputs)
-
-        feature_width = int(self.config.resampler.query_tokens**0.5)
-        if feature_width * feature_width != self.config.resampler.query_tokens:
-            raise ValueError("The query_tokens should be able to be squared")
-
-        decoder_inputs = (
-            resampler_results.transpose(1, 2)
-            .reshape(resampler_results.shape[0], -1, feature_width, feature_width)
-            .contiguous()
-        )
-
-        # vae decoder, ExternalModel
-        # diffusers.models.autoencoders.vae.Decoder
-        decoder = self.models["decoder"]
-        decoder_results = decoder(sample=decoder_inputs)
-
-        return decoder_results
-
-
-class BlurReconstructionPipeline:
-    def __init__(
-        self,
-        reconstruction_model: BlurReconstructionModel,
-        vae: AutoencoderKL,
-        eeg_model: Optional[EncoderModel] = None,
-        processor: Optional[EEGProcessor] = None,
-        device: Union[str, torch.device, None] = None,
-        dtype: Optional[torch.dtype] = None,
-    ):
-        if isinstance(device, torch.device):
-            self.device = device
-        else:
-            self.device = get_device(device)
-        self.dtype = dtype if dtype is not None else torch.float16
-
-        self.eeg_model = eeg_model
-        self.vae = vae
-        self.reconstruction_model = reconstruction_model
-
-        self.processor = processor
-
-    @torch.inference_mode()
-    def get_eeg_embeds(self, eeg_values: torch.Tensor):
-        assert self.processor is not None, "Got eeg values but the processor is None"
-        eeg_inputs = self.processor(eeg_values)
-
-        assert self.eeg_model is not None, "Got eeg values but the eeg_model is None"
-        eeg_embeds = self.eeg_model(eeg_inputs)
-
-        return eeg_embeds
-
-    def __call__(
-        self,
-        eeg_values: Optional[torch.Tensor] = None,
-        eeg_embeds: Optional[torch.Tensor] = None,
-        seed: Optional[int] = None,
-        output_type: str = "pil",  # pil, pt, np
-    ) -> Union[Image.Image, torch.Tensor]:
-        self.reconstruction_model.to(self.device, self.dtype)
-        self.vae.to(self.device, self.dtype)
-
-        if self.eeg_model is not None:
-            self.eeg_model.to(self.device, self.dtype)
-
-        if eeg_embeds is None and eeg_values is not None:
-            eeg_embeds = self.get_eeg_embeds(eeg_values)
-
-        eeg_embeds = eeg_embeds.to(self.device, self.dtype)
-
-        generator = get_generator(seed, device=self.device)
-
-        with torch.inference_mode():
-            latents_pred = self.reconstruction_model(eeg_embeds)
-            pixel_pred = self.vae.decode(
-                latents_pred / self.vae.config.scaling_factor,
-                return_dict=False,
-                generator=generator,
-            )[0]
-
-        pixel_values = pixel_pred / 2.0 + 0.5
-
-        results = pixel_values.clamp(0, 1)
-
-        if output_type == "np":
-            results = pt_to_numpy(results)
-        if output_type == "pil":
-            results = numpy_to_pil(results)
-
-        return results

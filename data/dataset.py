@@ -98,8 +98,8 @@ class EEGImageNetDataset(Dataset):
         )
 
         self.image_processor = (
-            CLIPImageProcessor.from_pretrained(config.vision_model_path)
-            if config.get("vision_model_path", None) is not None
+            CLIPImageProcessor.from_pretrained(config.clip_model_path)
+            if config.get("clip_model_path", None) is not None
             else None
         )
 
@@ -125,14 +125,13 @@ class EEGImageNetDataset(Dataset):
             "eeg_values": eeg_inputs,
             "pixel_values": vision_inputs,
             "labels": item["label"],
-            "subjects": item["subject"],
-            "image_indexes": item["image"],
+            "image_indexes": self.images[item["image"]],
         }
 
         return data
 
 
-class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
+class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
     def __init__(self, mode: str, config: DictConfig) -> None:
         super().__init__(mode, config)
 
@@ -153,41 +152,6 @@ class EEGImageNetDatasetForBlurReconstruction(EEGImageNetDataset):
             self.splitter = random.sample(
                 self.splitter, config.get("num_validation_images", 4)
             )
-
-    def __getitem__(self, index) -> Dict:
-        idx = self.splitter[index]
-        item: Dict = self.dataset[idx]
-
-        image_path = os.path.join(
-            self.image_root_path,
-            ".".join([self.images[item["image"]], self.image_ext]),
-        )
-        raw_image = Image.open(image_path).convert("RGB")
-
-        vision_inputs = self.image_processor(raw_image)
-        ground_truth = (
-            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
-            if self.mode == "val" or self.mode == "test"
-            else None
-        )
-
-        eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
-
-        data = {
-            "pixel_values": vision_inputs.squeeze(dim=0),
-            "eeg_values": eeg_inputs,
-        }
-
-        if self.mode == "val" or self.mode == "test":
-            data["ground_truth"] = ground_truth.squeeze(dim=0)
-            data["image_indexes"] = self.images[item["image"]]
-
-        return data
-
-
-class EEGImageNetDatasetForGeneration(EEGImageNetDatasetForBlurReconstruction):
-    def __init__(self, mode: str, config: DictConfig) -> None:
-        super().__init__(mode, config)
 
         self.drop_probability: float = config.drop_probability
 

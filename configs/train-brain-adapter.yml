@@ -36,7 +36,7 @@ lightning:
   projection_trainable: false
 
   condition_model:
-    name: model.models.EncoderModelWithProjection
+    name: model.models.TransformerEncoderModel
     model_path: /root/autodl-tmp/pretrained/eeg-model-finetune-4
 
 model:

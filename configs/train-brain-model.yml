@@ -1,9 +1,9 @@
 trainer:
   task: train_and_test_with_best
-  seed: 2024
-  save_directory: /root/autodl-tmp/pretrained
+  seed: 
+  save_directory: /root/autodl-tmp/pretrained/brain-kd
   check_val_every_n_epoch: &interval 1
-  max_epochs: &max_epochs 50
+  max_epochs: &max_epochs 30
   num_devices: 1
 
   checkpoint:
@@ -19,7 +19,7 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: eeg-model
+    name: brain-kd
     version: 5-95
     default_hp_metric: false
 
@@ -27,10 +27,12 @@ lightning:
   name: model.lightnings.LitBrainKDModel
 
   pretrained_model_path: null
-  vision_model_path: &vision_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+
+  residual_ratio: 0.8
 
 model:
-  name: model.models.EncoderModelWithProjection
+  name: model.models.TransformerEncoderModel
   encoder_name: model.modules.EEGTransformer
 
   num_channels: 128
@@ -39,14 +41,14 @@ model:
   hidden_size: 768
   num_layers: 6
   num_attention_heads: 12
-  mlp_ratio: 1.0
-  dropout: 0.1
+  mlp_ratio: 2.0
+  dropout: 0.2
+  act_fn: gelu
 
   projection_dim: 768
 
   output_key: 0
   pool_type: cls
-
 
 dataset: 
   name: data.dataset.EEGImageNetDataset
@@ -60,7 +62,7 @@ dataset:
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  vision_model_path: *vision_model_path
+  clip_model_path: *clip_model_path
 
   merge_train_and_val: true
 
@@ -74,7 +76,7 @@ optimizer:
 scheduler:
   name: flash.core.optimizers.LinearWarmupCosineAnnealingLR
   params:
-    warmup_epochs: 5
+    warmup_epochs: 3
     max_epochs: *max_epochs
     warmup_start_lr: 4.e-5
     eta_min: 2.e-5

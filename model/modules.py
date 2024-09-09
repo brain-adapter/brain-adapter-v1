@@ -76,37 +76,33 @@ def get_device(device_name: Optional[str]) -> torch.device:
 
 
 class EEGEmbeddings(nn.Module):
-    def __init__(
-        self,
-        num_channels: int,
-        num_samples: int,
-        patch_size: int,
-        embed_dim: int,
-        cls_token: Optional[bool] = True,  # class token for global semantics
-    ):
+    def __init__(self, config: DictConfig):
         super().__init__()
+
         assert (
-            num_samples % patch_size == 0
+            config.num_samples % config.patch_size == 0
         ), "[num_samples] should be divisible by [patch_size]"
+
+        self.embed_dim: int = config.hidden_size
+
         self.patch_embedding = nn.Conv1d(
-            in_channels=num_channels,
-            out_channels=embed_dim,
-            kernel_size=patch_size,
-            stride=patch_size,
+            in_channels=config.num_channels,
+            out_channels=self.embed_dim,
+            kernel_size=config.patch_size,
+            stride=config.patch_size,
             bias=False,
         )
 
-        self.num_patches = num_samples // patch_size
-        self.embed_dim = embed_dim
+        self.num_patches = config.num_samples // config.patch_size
         self.num_positions = self.num_patches
 
-        if cls_token:
-            self.class_embedding = nn.Parameter(torch.randn(embed_dim))
+        if config.pool_type == "cls":
+            self.class_embedding = nn.Parameter(torch.randn(self.embed_dim))
             self.num_positions = self.num_positions + 1
         else:
             self.register_parameter("class_embedding", None)
 
-        self.position_embedding = nn.Embedding(self.num_positions, embed_dim)
+        self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
         self.register_buffer(
             "position_ids",
             torch.arange(self.num_positions).expand((1, -1)),
@@ -135,58 +131,38 @@ class EEGEmbeddings(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        mlp_ratio: float,
-        act_fn: str,
-        dropout: float,
-    ):
+    def __init__(self, config: DictConfig):
         super().__init__()
-        self.activation_fn = get_activation(act_fn)
-        self.intermediate_size = int(hidden_size * mlp_ratio)
-        self.hidden_size = hidden_size
+        self.config = config
+        self.intermediate_size = int(config.hidden_size * config.mlp_ratio)
+        self.hidden_size = config.hidden_size
 
-        self.fc1 = nn.Linear(hidden_size, self.intermediate_size)
-        self.drop1 = nn.Dropout(dropout)
-
-        self.fc2 = nn.Linear(self.intermediate_size, hidden_size)
-        self.drop2 = nn.Dropout(dropout)
+        self.projection = nn.Sequential(
+            nn.Linear(self.hidden_size, self.intermediate_size),
+            get_activation(config.act_fn),
+            nn.Dropout(config.dropout),
+            nn.Linear(self.intermediate_size, self.hidden_size),
+            nn.Dropout(config.dropout),
+        )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        hidden_states = self.fc1(hidden_states)
-        hidden_states = self.activation_fn(hidden_states)
-        hidden_states = self.drop1(hidden_states)
-
-        hidden_states = self.fc2(hidden_states)
-        hidden_states = self.drop2(hidden_states)
-        return hidden_states
+        return self.projection(hidden_states)
 
 
 class SelfAttentionLayer(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        num_attention_heads: int,
-        dropout: float,
-        mlp_ratio: float,
-        act_fn: str,
-    ):
+    def __init__(self, config: DictConfig):
         super().__init__()
-        self.embed_dim = hidden_size
+        self.config = config
+        self.embed_dim = config.hidden_size
+
         self.self_attn = nn.MultiheadAttention(
-            embed_dim=hidden_size,
-            num_heads=num_attention_heads,
-            dropout=dropout,
+            embed_dim=self.embed_dim,
+            num_heads=config.num_attention_heads,
+            dropout=config.dropout,
             batch_first=True,
         )
         self.layer_norm1 = nn.LayerNorm(self.embed_dim)
-        self.mlp = MLP(
-            hidden_size=hidden_size,
-            mlp_ratio=mlp_ratio,
-            act_fn=act_fn,
-            dropout=dropout,
-        )
+        self.mlp = MLP(config)
         self.layer_norm2 = nn.LayerNorm(self.embed_dim)
 
     def forward(
@@ -218,23 +194,15 @@ class SelfAttentionLayer(nn.Module):
 
 
 class CrossAttentionLayer(nn.Module):
-    def __init__(
-        self,
-        hidden_size: int,
-        num_attention_heads: int,
-        kv_dim: int = None,
-        dropout: float = 0.0,
-        mlp_ratio: float = 1.0,
-        act_fn: str = "gelu",
-    ):
+    def __init__(self, config: DictConfig):
         super().__init__()
-        self.embed_dim = hidden_size
-        self.kv_dim = kv_dim if kv_dim is not None else hidden_size
+        self.embed_dim: int = config.hidden_size
+        self.kv_dim: int = config.kv_dim
 
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=self.embed_dim,
-            num_heads=num_attention_heads,
-            dropout=dropout,
+            num_heads=config.num_attention_heads,
+            dropout=config.dropout,
             kdim=self.kv_dim,
             vdim=self.kv_dim,
             batch_first=True,
@@ -242,12 +210,7 @@ class CrossAttentionLayer(nn.Module):
         self.query_norm = nn.LayerNorm(self.embed_dim)
         self.kv_norm = nn.LayerNorm(self.kv_dim)
 
-        self.mlp = MLP(
-            hidden_size=hidden_size,
-            mlp_ratio=mlp_ratio,
-            act_fn=act_fn,
-            dropout=dropout,
-        )
+        self.mlp = MLP(config)
         self.mlp_norm = nn.LayerNorm(self.embed_dim)
 
     def forward(
@@ -279,32 +242,11 @@ class CrossAttentionLayer(nn.Module):
 
 
 class SelfAttentionBlock(nn.Module):
-    def __init__(
-        self,
-        num_layers: int,
-        hidden_size: int,
-        num_attention_heads: int,
-        dropout: Optional[float] = None,
-        mlp_ratio: Optional[float] = None,
-        act_fn: Optional[str] = None,
-    ):
+    def __init__(self, config: DictConfig):
         super().__init__()
 
-        dropout = dropout if dropout is not None else 0.0
-        mlp_ratio = mlp_ratio if mlp_ratio is not None else 1.0
-        act_fn = act_fn if act_fn is not None else "gelu"
-
         self.layers = nn.ModuleList(
-            [
-                SelfAttentionLayer(
-                    hidden_size=hidden_size,
-                    num_attention_heads=num_attention_heads,
-                    dropout=dropout,
-                    mlp_ratio=mlp_ratio,
-                    act_fn=act_fn,
-                )
-                for _ in range(num_layers)
-            ]
+            [SelfAttentionLayer(config) for _ in range(config.num_layers)]
         )
 
     def forward(
@@ -329,34 +271,11 @@ class SelfAttentionBlock(nn.Module):
 
 
 class CrossAttentionBlock(nn.Module):
-    def __init__(
-        self,
-        num_layers: int,
-        hidden_size: int,
-        num_attention_heads: int,
-        kv_dim: int = None,
-        dropout: Optional[float] = None,
-        mlp_ratio: Optional[float] = None,
-        act_fn: Optional[str] = None,
-    ):
+    def __init__(self, config: DictConfig):
         super().__init__()
 
-        dropout = dropout if dropout is not None else 0.0
-        mlp_ratio = mlp_ratio if mlp_ratio is not None else 4.0
-        act_fn = act_fn if act_fn is not None else "gelu"
-
         self.layers = nn.ModuleList(
-            [
-                CrossAttentionLayer(
-                    hidden_size=hidden_size,
-                    num_attention_heads=num_attention_heads,
-                    kv_dim=kv_dim,
-                    dropout=dropout,
-                    mlp_ratio=mlp_ratio,
-                    act_fn=act_fn,
-                )
-                for _ in range(num_layers)
-            ]
+            [CrossAttentionLayer(config) for _ in range(config.num_layers)]
         )
 
     def forward(
@@ -389,23 +308,10 @@ class EEGTransformer(nn.Module):
         self.pool_type = config.get("pool_type", "cls")
 
         # learnable pos embedding is more compatible for EEG features
-        self.embeddings = EEGEmbeddings(
-            num_channels=config.num_channels,
-            num_samples=config.num_samples,
-            patch_size=config.patch_size,
-            embed_dim=config.hidden_size,
-            cls_token=self.pool_type == "cls",
-        )
+        self.embeddings = EEGEmbeddings(config)
         self.pre_layernorm = nn.LayerNorm(config.hidden_size)
 
-        self.block = SelfAttentionBlock(
-            num_layers=config.num_layers,
-            hidden_size=config.hidden_size,
-            num_attention_heads=config.num_attention_heads,
-            dropout=config.get("dropout", None),
-            mlp_ratio=config.get("mlp_ratio", None),
-            act_fn=config.get("act_fn", None),
-        )
+        self.block = SelfAttentionBlock(config)
 
         self.post_layernorm = nn.LayerNorm(config.hidden_size)
 

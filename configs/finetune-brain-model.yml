@@ -3,7 +3,7 @@ trainer:
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: &interval 1
-  max_epochs: 5
+  max_epochs: 10
   num_devices: 1
 
   checkpoint:
@@ -27,7 +27,9 @@ lightning:
   name: model.lightnings.LitBrainKDModel
 
   pretrained_model_path: /root/autodl-tmp/pretrained/eeg-model
-  vision_model_path: &vision_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+
+  residual_ratio: 0.8
 
 model: null
 
@@ -44,7 +46,7 @@ dataset:
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
-  vision_model_path: *vision_model_path
+  clip_model_path: *clip_model_path
 
   merge_train_and_val: true
 
