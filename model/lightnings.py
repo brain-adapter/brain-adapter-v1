@@ -27,7 +27,7 @@ from model.models import (
     PytorchVisionModel,
     AdapterPipeline,
 )
-from model.modules import compute_snr, get_class
+from model.modules import compute_snr, get_class, VisionAttnProcessor
 from model.evaluation import get_evaluation
 
 
@@ -157,10 +157,8 @@ class LitBrainKDModel(LitBaseModel):
             vision_embeds: torch.Tensor = self.vision_model(pixel_values)
 
         loss = nn.functional.cosine_embedding_loss(
-            eeg_embeds,
-            vision_embeds,
-            target=torch.ones(batch_size, device=eeg_embeds.device),
-        )
+            eeg_embeds, vision_embeds, torch.ones(batch_size, device=self.device)
+        ) + nn.functional.mse_loss(eeg_embeds, vision_embeds)
 
         return {
             "loss": loss,

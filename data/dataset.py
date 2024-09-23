@@ -103,6 +103,11 @@ class EEGImageNetDataset(Dataset):
             else None
         )
 
+        if mode == "val" or mode == "test":
+            self.splitter = random.sample(
+                self.splitter, config.get("num_validation_images", 32)
+            )
+
     def __len__(self):
         return len(self.splitter)
 
@@ -119,6 +124,12 @@ class EEGImageNetDataset(Dataset):
             images=raw_image, return_tensors="pt"
         ).pixel_values.squeeze(dim=0)
 
+        ground_truth = (
+            resize_images(raw_image, new_size=512, convert_to_tensor=True)
+            if self.mode == "val" or self.mode == "test"
+            else None
+        )
+
         eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
 
         data = {
@@ -127,6 +138,9 @@ class EEGImageNetDataset(Dataset):
             "labels": item["label"],
             "image_indexes": self.images[item["image"]],
         }
+
+        if self.mode in ["val", "test"]:
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
 
         return data
 

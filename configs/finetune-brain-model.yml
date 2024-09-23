@@ -29,8 +29,6 @@ lightning:
   pretrained_model_path: /root/autodl-tmp/pretrained/eeg-model
   clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
 
-  residual_ratio: 0.8
-
 model: null
 
 

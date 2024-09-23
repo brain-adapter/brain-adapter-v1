@@ -1,8 +1,8 @@
 trainer:
   task: train_and_test_with_best
-  seed: 
+  seed: 2024
   save_directory: /root/autodl-tmp/pretrained/brain-kd
-  check_val_every_n_epoch: &interval 1
+  check_val_every_n_epoch: &interval 2
   max_epochs: &max_epochs 30
   num_devices: 1
 
@@ -29,7 +29,6 @@ lightning:
   pretrained_model_path: null
   clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
 
-  residual_ratio: 0.8
 
 model:
   name: model.models.TransformerEncoderModel
@@ -41,8 +40,8 @@ model:
   hidden_size: 768
   num_layers: 6
   num_attention_heads: 12
-  mlp_ratio: 2.0
-  dropout: 0.2
+  mlp_ratio: 1.0
+  dropout: 0.
   act_fn: gelu
 
   projection_dim: 768
@@ -55,7 +54,7 @@ dataset:
 
   num_workers: 2 # num_devices * 2
   subject: 0 # 0 means using data of all subjects
-  batch_size: 16
+  batch_size: 8
 
   image_ext: JPEG
 
