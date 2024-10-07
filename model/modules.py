@@ -153,6 +153,8 @@ class EEGEmebeddingsWithMOE(nn.Module):
         self.num_patches = config.num_samples // config.patch_size
         self.num_positions = self.num_patches
 
+        # For each subject, there will be a class embedding, but problem also occurs when coming across unseen
+        # subjects.
         self.class_embedding = nn.ParameterList(
             torch.randn(self.embed_dim) for _ in range(config.num_subjects)
         )
