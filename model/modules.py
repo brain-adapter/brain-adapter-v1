@@ -78,6 +78,7 @@ def get_device(device_name: Optional[str]) -> torch.device:
 class EEGEmbeddings(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()
+        self.config = config
 
         assert (
             config.num_samples % config.patch_size == 0
@@ -125,6 +126,54 @@ class EEGEmbeddings(nn.Module):
         embeds.append(patch_embeds)
 
         embeds = torch.cat(embeds, dim=1)
+
+        embeds = embeds + self.position_embedding(self.position_ids)
+        return embeds
+
+
+class EEGEmebeddingsWithMOE(nn.Module):
+    def __init__(self, config: DictConfig):
+        super().__init__()
+        self.config = config
+
+        assert (
+            config.num_samples % config.patch_size == 0
+        ), "[num_samples] should be divisible by [patch_size]"
+
+        self.embed_dim: int = config.hidden_size
+
+        self.patch_embedding = nn.Conv1d(
+            in_channels=config.num_channels,
+            out_channels=self.embed_dim,
+            kernel_size=config.patch_size,
+            stride=config.patch_size,
+            bias=False,
+        )
+
+        self.num_patches = config.num_samples // config.patch_size
+        self.num_positions = self.num_patches
+
+        self.class_embedding = nn.ParameterList(
+            torch.randn(self.embed_dim) for _ in range(config.num_subjects)
+        )
+
+        self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
+        self.register_buffer(
+            "position_ids",
+            torch.arange(self.num_positions).expand((1, -1)),
+            persistent=False,
+        )
+
+    def forward(self, values: torch.Tensor, subject: torch.Tensor):
+        class_embeds = torch.stack(
+            [self.class_embedding[s] for s in subject]
+        ).unsqueeze(dim=1)
+
+        patch_embeds = (
+            self.patch_embedding(values).transpose(1, 2).contiguous()
+        )  # shape = [batch_size, num_sequence, embed_dim]
+
+        embeds = torch.cat([class_embeds, patch_embeds], dim=1)
 
         embeds = embeds + self.position_embedding(self.position_ids)
         return embeds
@@ -772,20 +821,11 @@ class VisionAttnProcessor(nn.Module):
 
 
 class MixedAttnProcessor(nn.Module):
-    r"""
-    Attention processor for mixed condition for PyTorch 2.0.
-    Args:
-        hidden_size (`int`):
-            The hidden size of the attention layer.
-        cross_attention_dim (`int`):
-            The number of channels in the `encoder_hidden_states`.
-    """
-
     def __init__(
         self,
         hidden_size: int,
         cross_attention_dim: int,
-        token_bounds: Tuple[Tuple[int]],
+        num_vision_tokens: int = 4,
     ):
         super().__init__()
 
@@ -794,31 +834,23 @@ class MixedAttnProcessor(nn.Module):
                 f"{self.__class__.__name__} requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
 
-        self.token_bounds = token_bounds
-        self.num_adapters = len(token_bounds)
-
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
+        self.num_vision_tokens = num_vision_tokens
 
-        self.to_key = nn.ModuleList(
-            [
-                nn.Linear(cross_attention_dim, hidden_size, bias=False)
-                for _ in range(self.num_adapters)
-            ]
-        )
+        self.to_key_eeg = nn.Linear(cross_attention_dim, hidden_size, bias=False)
+        self.to_value_eeg = nn.Linear(cross_attention_dim, hidden_size, bias=False)
 
-        self.to_value = nn.ModuleList(
-            [
-                nn.Linear(cross_attention_dim, hidden_size, bias=False)
-                for _ in range(self.num_adapters)
-            ]
-        )
+        self.to_key_vision = nn.Linear(cross_attention_dim, hidden_size, bias=False)
+        self.to_value_vision = nn.Linear(cross_attention_dim, hidden_size, bias=False)
+
+        self.eeg_scale = nn.Parameter(torch.tensor(0.0))
 
     def __call__(
         self,
         attn: Attention,
         hidden_states: torch.FloatTensor,
-        encoder_hidden_states: torch.FloatTensor,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         temb: Optional[torch.FloatTensor] = None,
     ):
@@ -835,54 +867,62 @@ class MixedAttnProcessor(nn.Module):
                 batch_size, channel, height * width
             ).transpose(1, 2)
 
-        batch_size = hidden_states.shape[0]
+        batch_size = encoder_hidden_states.shape[0]
 
         if attn.group_norm is not None:
             hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(
                 1, 2
             )
 
-        query = attn.to_q(hidden_states)
+        query: torch.Tensor = attn.to_q(hidden_states)
+
+        vision_tokens: torch.Tensor = encoder_hidden_states[:, : self.num_vision_tokens]
+        vision_key: torch.Tensor = self.to_key_vision(vision_tokens)
+        vision_value: torch.Tensor = self.to_value_vision(vision_tokens)
 
         head_dim = self.hidden_size // attn.heads
 
         query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
-        adapter_hidden_states_ = []
+        vision_key = vision_key.view(batch_size, -1, attn.heads, head_dim).transpose(
+            1, 2
+        )
+        vision_value = vision_value.view(
+            batch_size, -1, attn.heads, head_dim
+        ).transpose(1, 2)
 
-        for to_key, to_value, token_bounds in zip(
-            self.to_key, self.to_value, self.token_bounds
-        ):
-            adapter_hidden_states = encoder_hidden_states[
-                :, token_bounds[0] : token_bounds[1], :
-            ]
+        # the output of sdp = (batch, num_heads, seq_len, head_dim)
+        # TODO: add support for attn.scale when we move to Torch 2.1
+        hidden_states = F.scaled_dot_product_attention(
+            query,
+            vision_key,
+            vision_value,
+            attn_mask=None,
+            dropout_p=0.0,
+            is_causal=False,
+        )
+        hidden_states = hidden_states.transpose(1, 2).reshape(
+            batch_size, -1, attn.heads * head_dim
+        )
+        hidden_states = hidden_states.to(query.dtype)
 
-            key: torch.Tensor = to_key(adapter_hidden_states)
-            value: torch.Tensor = to_value(adapter_hidden_states)
+        eeg_tokens: torch.Tensor = encoder_hidden_states[:, self.num_vision_tokens :]
+        eeg_key: torch.Tensor = self.to_key_eeg(eeg_tokens)
+        eeg_value: torch.Tensor = self.to_value_eeg(eeg_tokens)
 
-            key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
-            value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        eeg_key = eeg_key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
+        eeg_value = eeg_value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
-            # the output of sdp = (batch, num_heads, seq_len, head_dim)
-            # TODO: add support for attn.scale when we move to Torch 2.1
-            adapter_hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False
-            )
+        eeg_hidden_states: torch.Tensor = F.scaled_dot_product_attention(
+            query, eeg_key, eeg_value, attn_mask=None, dropout_p=0.0, is_causal=False
+        )
 
-            adapter_hidden_states = adapter_hidden_states.transpose(1, 2).reshape(
-                batch_size, -1, attn.heads * head_dim
-            )
-            adapter_hidden_states = adapter_hidden_states.to(query.dtype)
+        eeg_hidden_states = eeg_hidden_states.transpose(1, 2).reshape(
+            batch_size, -1, attn.heads * head_dim
+        )
+        eeg_hidden_states = eeg_hidden_states.to(query.dtype)
 
-            adapter_hidden_states_.append(adapter_hidden_states)
-
-        hidden_states_ = torch.stack(adapter_hidden_states_, dim=0)
-        hidden_states = torch.sum(hidden_states_, dim=0)
-
-        # linear proj
-        hidden_states = attn.to_out[0](hidden_states)
-        # dropout
-        hidden_states = attn.to_out[1](hidden_states)
+        hidden_states = hidden_states + eeg_hidden_states * self.eeg_scale.tanh()
 
         if input_ndim == 4:
             hidden_states = hidden_states.transpose(-1, -2).reshape(

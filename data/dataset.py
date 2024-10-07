@@ -204,6 +204,65 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         return data
 
 
+class EEGImageNetDatasetForMixedInput(EEGImageNetDataset):
+    def __init__(self, mode: str, config: DictConfig):
+        super().__init__(mode, config)
+
+        self.vae_processor = transforms.Compose(
+            [
+                transforms.Resize(
+                    config.resolution,
+                    interpolation=transforms.InterpolationMode.BILINEAR,
+                ),
+                transforms.CenterCrop(config.resolution),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+        )
+        self.resolution: int = config.resolution
+
+        if mode == "val":
+            self.splitter = random.sample(
+                self.splitter, config.get("num_validation_images", 4)
+            )
+
+        self.drop_probability: float = config.drop_probability
+
+    def __getitem__(self, index) -> Dict:
+        idx = self.splitter[index]
+        item: Dict = self.dataset[idx]
+
+        image_path = os.path.join(
+            self.image_root_path,
+            ".".join([self.images[item["image"]], self.image_ext]),
+        )
+        raw_image = Image.open(image_path).convert("RGB")
+
+        pixel_values = self.vae_processor(raw_image)
+        ground_truth = (
+            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
+            if self.mode == "val" or self.mode == "test"
+            else None
+        )
+
+        # handle drop to enhance classifier-free guidance
+        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
+
+        eeg_input = self.eeg_processor(item["eeg"], return_batches=False)
+        vision_input = self.image_processor(raw_image, return_tensors="pt").pixel_values
+
+        data = {"eeg_input": eeg_input, "vision_input": vision_input}
+
+        if self.mode == "train":
+            data["drops"] = drops
+            data["pixel_values"] = pixel_values
+
+        if self.mode == "val" or self.mode == "test":
+            data["ground_truth"] = ground_truth.squeeze(dim=0)
+            data["image_indexes"] = self.images[item["image"]]
+
+        return data
+
 class ImageDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig) -> None:
         super().__init__()
