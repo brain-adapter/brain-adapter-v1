@@ -14,14 +14,12 @@ from transformers import (
 from torchvision.models import VisionTransformer
 from PIL import Image
 
+from model.activations import get_class, get_device, get_generator
 from model.modules import (
     AttnProcessor,
     MixedAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,
-    get_class,
-    get_generator,
-    get_device,
 )
 from data.dataset import EEGProcessor
 

@@ -11,7 +11,7 @@ from lightning.pytorch.loggers import TensorBoardLogger
 from omegaconf import DictConfig, OmegaConf
 from lightning import Trainer
 
-from model.modules import get_class
+from model.activations import get_class
 from model.lightnings import LitBaseModel
 from data.datamodule import DataModule
 

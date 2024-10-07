@@ -3,7 +3,7 @@ import lightning
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 
-from model.modules import get_class
+from model.activations import get_class
 
 
 class DataModule(lightning.LightningDataModule):

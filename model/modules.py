@@ -1,78 +1,12 @@
-from typing import Optional, Tuple, Type, Union
 import torch
+import torch.nn.functional as F
+
 from torch import nn
 from omegaconf import DictConfig
-import torch.nn.functional as F
+from typing import Optional, Tuple, Union
 from diffusers.models.attention_processor import Attention
 
 from .activations import get_activation
-
-
-def get_class(name: str) -> Type:
-    import importlib
-
-    module_name, class_name = name.rsplit(".", 1)
-    module = importlib.import_module(module_name, package=None)
-    return getattr(module, class_name)
-
-
-def get_generator(seed, device):
-
-    if seed is not None:
-        if isinstance(seed, list):
-            generator = [
-                torch.Generator(device).manual_seed(seed_item) for seed_item in seed
-            ]
-        else:
-            generator = torch.Generator(device).manual_seed(seed)
-    else:
-        generator = None
-
-    return generator
-
-
-def compute_snr(noise_scheduler, timesteps):
-    """
-    Computes SNR as per
-    https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L847-L849
-    """
-    alphas_cumprod = noise_scheduler.alphas_cumprod
-    sqrt_alphas_cumprod = alphas_cumprod**0.5
-    sqrt_one_minus_alphas_cumprod = (1.0 - alphas_cumprod) ** 0.5
-
-    # Expand the tensors.
-    # Adapted from https://github.com/TiankaiHang/Min-SNR-Diffusion-Training/blob/521b624bd70c67cee4bdf49225915f5945a872e3/guided_diffusion/gaussian_diffusion.py#L1026
-    sqrt_alphas_cumprod = sqrt_alphas_cumprod.to(device=timesteps.device)[
-        timesteps
-    ].float()
-    while len(sqrt_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_alphas_cumprod = sqrt_alphas_cumprod[..., None]
-    alpha = sqrt_alphas_cumprod.expand(timesteps.shape)
-
-    sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod.to(
-        device=timesteps.device
-    )[timesteps].float()
-    while len(sqrt_one_minus_alphas_cumprod.shape) < len(timesteps.shape):
-        sqrt_one_minus_alphas_cumprod = sqrt_one_minus_alphas_cumprod[..., None]
-    sigma = sqrt_one_minus_alphas_cumprod.expand(timesteps.shape)
-
-    # Compute SNR.
-    snr = (alpha / sigma) ** 2
-    return snr
-
-
-def get_device(device_name: Optional[str]) -> torch.device:
-    if device_name is not None:
-        return torch.device(device_name)
-    return (
-        torch.device("cuda")
-        if torch.cuda.is_available()
-        else (
-            torch.device("mps")
-            if torch.backends.mps.is_available()
-            else torch.device("cpu")
-        )
-    )
 
 
 class EEGEmbeddings(nn.Module):
@@ -153,8 +87,8 @@ class EEGEmebeddingsWithMOE(nn.Module):
         self.num_patches = config.num_samples // config.patch_size
         self.num_positions = self.num_patches
 
-        # For each subject, there will be a class embedding, but problem also occurs when coming across unseen
-        # subjects.
+        # For each subject, there will be a class embedding, but problem also occurs when coming across with
+        #  unseen subjects.
         self.class_embedding = nn.ParameterList(
             torch.randn(self.embed_dim) for _ in range(config.num_subjects)
         )

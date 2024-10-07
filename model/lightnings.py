@@ -19,6 +19,7 @@ from diffusers import (
 )
 
 
+from model.activations import compute_snr, get_class
 from model.models import (
     TransformerEncoderModel,
     CLIPVisionModel,
@@ -29,7 +30,7 @@ from model.models import (
     AdapterPipeline,
     MultiAdapterPipeline,
 )
-from model.modules import compute_snr, get_class, VisionAttnProcessor
+from model.modules import VisionAttnProcessor
 from model.evaluation import get_evaluation
 
 
