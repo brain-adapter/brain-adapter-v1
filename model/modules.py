@@ -1,5 +1,4 @@
 import torch
-
 from torch import nn
 from omegaconf import DictConfig
 from typing import Optional, Tuple, Union
