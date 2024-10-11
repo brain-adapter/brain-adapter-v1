@@ -25,7 +25,7 @@ logger:
 
 lightning:
   name: model.lightnings.LitBrainAdapterModel
-  pretrained_model_path: null # for finetuning
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part-0
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
 
   snr_gamma: 5.0
