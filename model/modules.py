@@ -1,5 +1,4 @@
 import torch
-import torch.nn.functional as F
 
 from torch import nn
 from omegaconf import DictConfig
@@ -404,7 +403,7 @@ class AttnProcessor(nn.Module):
 
     def __init__(self):
         super().__init__()
-        if not hasattr(F, "scaled_dot_product_attention"):
+        if not hasattr(nn.functional, "scaled_dot_product_attention"):
             raise ImportError(
                 "AttnProcessor2_0 requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
@@ -475,7 +474,7 @@ class AttnProcessor(nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = F.scaled_dot_product_attention(
+        hidden_states = nn.functional.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
 
@@ -523,7 +522,7 @@ class IPAttnProcessor(nn.Module):
     ):
         super().__init__()
 
-        if not hasattr(F, "scaled_dot_product_attention"):
+        if not hasattr(nn.functional, "scaled_dot_product_attention"):
             raise ImportError(
                 "AttnProcessor requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
@@ -613,7 +612,7 @@ class IPAttnProcessor(nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = F.scaled_dot_product_attention(
+        hidden_states = nn.functional.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
 
@@ -631,7 +630,7 @@ class IPAttnProcessor(nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        ip_hidden_states = F.scaled_dot_product_attention(
+        ip_hidden_states = nn.functional.scaled_dot_product_attention(
             query, ip_key, ip_value, attn_mask=None, dropout_p=0.0, is_causal=False
         )
         with torch.no_grad():
@@ -676,7 +675,7 @@ class VisionAttnProcessor(nn.Module):
     def __init__(self, hidden_size: int, cross_attention_dim: int):
         super().__init__()
 
-        if not hasattr(F, "scaled_dot_product_attention"):
+        if not hasattr(nn.functional, "scaled_dot_product_attention"):
             raise ImportError(
                 f"{self.__class__.__name__} requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
@@ -730,7 +729,7 @@ class VisionAttnProcessor(nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = F.scaled_dot_product_attention(
+        hidden_states = nn.functional.scaled_dot_product_attention(
             query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False
         )
 
@@ -766,7 +765,7 @@ class MixedAttnProcessor(nn.Module):
     ):
         super().__init__()
 
-        if not hasattr(F, "scaled_dot_product_attention"):
+        if not hasattr(nn.functional, "scaled_dot_product_attention"):
             raise ImportError(
                 f"{self.__class__.__name__} requires PyTorch 2.0, to use it, please upgrade PyTorch to 2.0."
             )
@@ -830,7 +829,7 @@ class MixedAttnProcessor(nn.Module):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = F.scaled_dot_product_attention(
+        hidden_states = nn.functional.scaled_dot_product_attention(
             query,
             vision_key,
             vision_value,
@@ -850,7 +849,7 @@ class MixedAttnProcessor(nn.Module):
         eeg_key = eeg_key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         eeg_value = eeg_value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
-        eeg_hidden_states: torch.Tensor = F.scaled_dot_product_attention(
+        eeg_hidden_states: torch.Tensor = nn.functional.scaled_dot_product_attention(
             query, eeg_key, eeg_value, attn_mask=None, dropout_p=0.0, is_causal=False
         )
 
