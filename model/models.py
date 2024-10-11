@@ -20,6 +20,7 @@ from model.modules import (
     MixedAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,
+    EEGEmebeddingsWithMOE,
 )
 from data.dataset import EEGProcessor
 
@@ -40,6 +41,10 @@ class PreTrainedModel(nn.Module):
                 nn.init.normal_(
                     module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
                 )
+            nn.init.normal_(module.patch_embedding.weight, std=0.02)
+        elif isinstance(module, EEGEmebeddingsWithMOE):
+            for embedding in module.class_embedding:
+                nn.init.normal_(embedding)
             nn.init.normal_(module.patch_embedding.weight, std=0.02)
 
         elif isinstance(module, TransformerEncoderModel):
@@ -167,60 +172,20 @@ class TransformerEncoderModel(PreTrainedModel):
         )
         self.apply(self._init_weights)
 
-    def forward(self, inputs: torch.Tensor, **kwargs):
-        encoder_outputs = self.encoder(inputs, output_attentions=False, **kwargs)
+    def forward(self, values: torch.Tensor, **kwargs):
+        encoder_outputs = self.encoder(values, output_attentions=False, **kwargs)
 
         embeds = self.projection(encoder_outputs[0])
 
         return embeds
 
     @torch.inference_mode()
-    def get_attn_maps(self, inputs: torch.Tensor, **kwargs):
-        encoder_outputs = self.encoder(inputs, output_attentions=True, **kwargs)
+    def get_attn_maps(self, values: torch.Tensor, **kwargs):
+        encoder_outputs = self.encoder(values, output_attentions=True, **kwargs)
 
         attn_maps = encoder_outputs[2]
 
         return attn_maps
-
-
-class CLIPVisionModel(PreTrainedModel):
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-        self.vision_model = CLIPVisionModelWithProjection.from_pretrained(
-            config.clip_model_path
-        )
-
-    def forward(self, pixel_values: torch.FloatTensor, **kwargs) -> torch.Tensor:
-        with torch.no_grad():
-            image_embeds = self.vision_model(pixel_values)[0]
-
-        return image_embeds
-
-    @torch.inference_mode()
-    def get_attn_maps(self, inputs: torch.Tensor):
-        encoder_outputs = self.vision_model(inputs, output_attentions=True)
-
-        attn_maps = encoder_outputs[3]
-
-        return attn_maps
-
-    @override
-    @classmethod
-    def from_pretrained(
-        cls,
-        pretrained_model_path: Optional[str] = None,
-        config: Optional[DictConfig] = None,
-    ) -> PreTrainedModel:
-        config = OmegaConf.create({"clip_model_path": pretrained_model_path})
-
-        model = cls(config)
-        # Set model in evaluation mode to deactivate DropOut modules by default
-        model.eval()
-        return model
-
-    @override
-    def save_pretrained(self, save_directory: str):
-        raise NotImplementedError("Cannot save an external pretrained model!")
 
 
 class PytorchVisionModel(PreTrainedModel):
@@ -367,7 +332,18 @@ class AdapterModel(PreTrainedModel):
         return model
 
 
-class SingleAdapterModel(AdapterModel):
+class VisionAdapterModel(AdapterModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+        self.projection = AdapterProjection(config.proj_config)
+
+        self.apply(self._init_weights)
+
+    def forward(self, cond_embeds: torch.Tensor) -> torch.Tensor:
+        return self.projection(cond_embeds)
+
+
+class BrainAdapterModel(AdapterModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.projection = AdapterProjection(config.proj_config)
@@ -387,14 +363,11 @@ class MultiAdapterModel(AdapterModel):
 
         self.apply(self._init_weights)
 
-    def forward(self, cond_embeds: torch.Tensor):
-        vision_embeds = cond_embeds[: self.vision_proj.input_dim]
-        eeg_embeds = cond_embeds[self.vision_proj.input_dim :]
-
+    def forward(self, vision_embeds: torch.Tensor, brain_embeds: torch.Tensor):
         vision_tokens = self.vision_proj(vision_embeds)
-        eeg_tokens = self.eeg_proj(eeg_embeds)
+        brain_tokens = self.eeg_proj(brain_embeds)
 
-        multi_tokens = torch.cat([vision_tokens, eeg_tokens], dim=1)
+        multi_tokens = torch.cat([vision_tokens, brain_tokens], dim=1)
 
         return multi_tokens
 
@@ -442,7 +415,7 @@ class MultiAdapterModel(AdapterModel):
 
     @classmethod
     def from_vision_adapter(cls, vision_adapter_model_path: str, config: DictConfig):
-        pretrained_config = SingleAdapterModel.load_config(vision_adapter_model_path)
+        pretrained_config = MultiAdapterModel.load_config(vision_adapter_model_path)
 
         unet = UNet2DConditionModel.from_pretrained(
             pretrained_config.diffusion_model_path, subfolder="unet"
@@ -483,13 +456,54 @@ class MultiAdapterModel(AdapterModel):
         return model
 
 
+def classifier_free_generate(
+    diffusion_pipeline: StableDiffusionPipeline,
+    cond_embeds: torch.Tensor,
+    uncond_embeds: torch.Tensor,
+    num_images_per_prompt: Optional[int] = None,
+    seed: Optional[int] = None,
+    guidance_scale: Optional[float] = None,
+    num_inference_steps: Optional[int] = None,
+    **kwargs,
+):
+    cond_embeds = cond_embeds.to(diffusion_pipeline.device, diffusion_pipeline.dtype)
+    uncond_embeds = uncond_embeds.to(
+        diffusion_pipeline.device, diffusion_pipeline.dtype
+    )
+
+    num_images_per_prompt = (
+        num_images_per_prompt if num_images_per_prompt is not None else 1
+    )
+
+    bs_embed, seq_len, _ = cond_embeds.shape
+
+    cond_embeds = cond_embeds.repeat(1, num_images_per_prompt, 1)
+    cond_embeds = cond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
+    uncond_embeds = uncond_embeds.repeat(1, num_images_per_prompt, 1)
+    uncond_embeds = uncond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
+
+    generator = get_generator(seed, device=diffusion_pipeline.device)
+
+    guidance_scale = guidance_scale if guidance_scale is not None else 7.5
+    num_inference_steps = num_inference_steps if num_inference_steps is not None else 50
+
+    images = diffusion_pipeline(
+        prompt_embeds=cond_embeds,
+        negative_prompt_embeds=uncond_embeds,
+        guidance_scale=guidance_scale,
+        num_inference_steps=num_inference_steps,
+        generator=generator,
+        **kwargs,
+    ).images
+
+    return images
+
+
 class AdapterPipeline:
     def __init__(
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
-        condition_model: Union[TransformerEncoderModel, CLIPVisionModel, None] = None,
-        adapter_model: Optional[SingleAdapterModel] = None,
-        processor: Union[EEGProcessor, CLIPImageProcessor, None] = None,
         device: Union[str, torch.device, None] = None,
         dtype: Optional[torch.dtype] = None,
     ):
@@ -500,9 +514,27 @@ class AdapterPipeline:
         self.dtype = dtype if dtype is not None else torch.float16
 
         self.pipeline = stable_diffusion_pipeline
-        self.condition_model = condition_model
-        self.adapter_model = adapter_model
 
+
+class VisionAdapterPipeline(AdapterPipeline):
+    """
+    Pipeline for vision adapter
+    """
+
+    def __init__(
+        self,
+        stable_diffusion_pipeline: StableDiffusionPipeline,
+        device: Union[str, torch.device, None] = None,
+        dtype: Optional[torch.dtype] = None,
+        vision_model: Optional[CLIPVisionModelWithProjection] = None,
+        adapter_model: Optional[VisionAdapterModel] = None,
+        processor: Optional[CLIPImageProcessor] = None,
+    ):
+
+        super().__init__(stable_diffusion_pipeline, device, dtype)
+
+        self.vision_model = vision_model
+        self.adapter_model = adapter_model
         self.processor = processor
 
         if self.adapter_model is not None:
@@ -511,9 +543,9 @@ class AdapterPipeline:
     @torch.inference_mode()
     def get_encoder_embeds(
         self,
-        cond_inputs: Union[torch.FloatTensor, Image.Image, List[Image.Image]],
+        pixel_values: Union[Image.Image, List[Image.Image]],
     ) -> Tuple[torch.Tensor]:
-        assert cond_inputs is not None, "cond_inputs cannot be None"
+        assert pixel_values is not None, "pixel_values cannot be None"
 
         assert (
             self.processor is not None
@@ -526,18 +558,8 @@ class AdapterPipeline:
         assert (
             self.adapter_model is not None
         ), "Got condition inputs but the adapter model is None"
-        if isinstance(self.processor, CLIPImageProcessor):
-            assert isinstance(
-                cond_inputs, (Image.Image, List[Image.Image])
-            ), f"Expect (Image.Image, List[Image.Image]), got {type(cond_inputs)}"
-            cond_tensors = self.processor(cond_inputs, return_tensors="pt").pixel_values
-        elif isinstance(self.processor, EEGProcessor):
-            assert isinstance(
-                cond_inputs, torch.FloatTensor
-            ), f"Expect (torch.FloatTensor), got {type(cond_inputs)}"
-            cond_tensors = self.processor(cond_inputs)
-        else:
-            raise ValueError(f"Unrecognizable processor type {type(self.processor)}")
+
+        cond_tensors = self.processor(pixel_values, return_tensors="pt").pixel_values
 
         cond_tensors = cond_tensors.to(self.device, self.dtype)
 
@@ -551,9 +573,99 @@ class AdapterPipeline:
 
     def __call__(
         self,
-        cond_inputs: Optional[
-            Union[torch.FloatTensor, Image.Image, List[Image.Image]]
-        ] = None,
+        pixel_values: Optional[Union[Image.Image, List[Image.Image]]] = None,
+        cond_embeds: Optional[torch.Tensor] = None,
+        uncond_embeds: Optional[torch.Tensor] = None,
+        num_images_per_prompt: Optional[int] = None,
+        seed: Optional[int] = None,
+        guidance_scale: Optional[float] = None,
+        num_inference_steps: Optional[int] = None,
+        **kwargs,
+    ):
+
+        self.pipeline.to(self.device, self.dtype)
+        if self.vision_model is not None and self.adapter_model is not None:
+            self.vision_model.to(self.device, self.dtype)
+            self.adapter_model.to(self.device, self.dtype)
+
+        if cond_embeds is None and uncond_embeds is None:
+            cond_embeds, uncond_embeds = self.get_encoder_embeds(pixel_values)
+        elif cond_embeds is not None and uncond_embeds is None:
+            raise ValueError("Got [cond_embeds], but [uncond_embeds] is missing")
+        elif cond_embeds is None and uncond_embeds is not None:
+            raise ValueError("Got [uncond_embeds], but [cond_embeds] is missing")
+
+        return classifier_free_generate(
+            self.pipeline,
+            cond_embeds,
+            uncond_embeds,
+            num_images_per_prompt,
+            seed,
+            guidance_scale,
+            num_inference_steps,
+            **kwargs,
+        )
+
+
+class BrainAdapterPipeline(AdapterPipeline):
+    """
+    Pipeline for brain adapter
+    """
+
+    def __init__(
+        self,
+        stable_diffusion_pipeline: StableDiffusionPipeline,
+        device: Union[str, torch.device, None] = None,
+        dtype: Optional[torch.dtype] = None,
+        brain_model: Optional[TransformerEncoderModel] = None,
+        adapter_model: Optional[BrainAdapterModel] = None,
+        processor: Optional[EEGProcessor] = None,
+    ):
+        super().__init__(stable_diffusion_pipeline, device, dtype)
+
+        self.brain_model = brain_model
+        self.adapter_model = adapter_model
+        self.processor = processor
+
+        if self.adapter_model is not None:
+            self.adapter_model.bind_unet(self.pipeline.unet)
+
+    @torch.inference_mode()
+    def get_encoder_embeds(
+        self, eeg_values: torch.FloatTensor, subjects: torch.Tensor
+    ) -> Tuple[torch.Tensor]:
+        assert (
+            eeg_values is not None and subjects is not None
+        ), "condition input cannot be None"
+
+        assert (
+            self.processor is not None
+        ), "Got condition inputs but the processor is None"
+
+        assert (
+            self.brain_model is not None
+        ), "Got condition inputs but the brain model is None"
+
+        assert (
+            self.adapter_model is not None
+        ), "Got condition inputs but the adapter model is None"
+
+        cond_tensors = self.processor(eeg_values)
+
+        cond_tensors = cond_tensors.to(self.device, self.dtype)
+
+        cond_embeds = self.condition_model(cond_tensors, subjects=subjects)
+        uncond_embeds = torch.zeros_like(cond_embeds)
+
+        cond_embeds = self.adapter_model(cond_embeds)
+        uncond_embeds = self.adapter_model(uncond_embeds)
+
+        return cond_embeds, uncond_embeds
+
+    def __call__(
+        self,
+        eeg_values: Optional[torch.FloatTensor] = None,
+        subjects: Optional[torch.Tensor] = None,
         cond_embeds: Optional[torch.Tensor] = None,
         uncond_embeds: Optional[torch.Tensor] = None,
         num_images_per_prompt: Optional[int] = None,
@@ -563,73 +675,44 @@ class AdapterPipeline:
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        if self.condition_model is not None and self.adapter_model is not None:
-            self.condition_model.to(self.device, self.dtype)
+        if self.vision_model is not None and self.adapter_model is not None:
+            self.vision_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
 
         if cond_embeds is None and uncond_embeds is None:
-            cond_embeds, uncond_embeds = self.get_encoder_embeds(cond_inputs)
+            cond_embeds, uncond_embeds = self.get_encoder_embeds(eeg_values, subjects)
         elif cond_embeds is not None and uncond_embeds is None:
             raise ValueError("Got [cond_embeds], but [uncond_embeds] is missing")
         elif cond_embeds is None and uncond_embeds is not None:
             raise ValueError("Got [uncond_embeds], but [cond_embeds] is missing")
 
-        cond_embeds = cond_embeds.to(self.device, self.dtype)
-        uncond_embeds = uncond_embeds.to(self.device, self.dtype)
-
-        num_images_per_prompt = (
-            num_images_per_prompt if num_images_per_prompt is not None else 1
-        )
-
-        bs_embed, seq_len, _ = cond_embeds.shape
-
-        cond_embeds = cond_embeds.repeat(1, num_images_per_prompt, 1)
-        cond_embeds = cond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
-
-        uncond_embeds = uncond_embeds.repeat(1, num_images_per_prompt, 1)
-        uncond_embeds = uncond_embeds.view(
-            bs_embed * num_images_per_prompt, seq_len, -1
-        )
-
-        generator = get_generator(seed, device=self.device)
-
-        guidance_scale = guidance_scale if guidance_scale is not None else 7.5
-        num_inference_steps = (
-            num_inference_steps if num_inference_steps is not None else 50
-        )
-
-        images = self.pipeline(
-            prompt_embeds=cond_embeds,
-            negative_prompt_embeds=uncond_embeds,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
-            generator=generator,
+        return classifier_free_generate(
+            self.pipeline,
+            cond_embeds,
+            uncond_embeds,
+            num_images_per_prompt,
+            seed,
+            guidance_scale,
+            num_inference_steps,
             **kwargs,
-        ).images
-
-        return images
+        )
 
 
-class MultiAdapterPipeline:
+class MultiAdapterPipeline(AdapterPipeline):
     def __init__(
         self,
         stable_diffusion_pipeline: StableDiffusionPipeline,
-        eeg_model: TransformerEncoderModel = None,
-        vision_model: CLIPVisionModel = None,
+        brain_model: TransformerEncoderModel = None,
+        vision_model: CLIPVisionModelWithProjection = None,
         adapter_model: Optional[MultiAdapterModel] = None,
         eeg_processor: EEGProcessor = None,
         vision_processor: CLIPImageProcessor = None,
         device: Union[str, torch.device, None] = None,
         dtype: Optional[torch.dtype] = None,
     ):
-        if isinstance(device, torch.device):
-            self.device = device
-        else:
-            self.device = get_device(device)
-        self.dtype = dtype if dtype is not None else torch.float16
+        super().__init__(stable_diffusion_pipeline, device, dtype)
 
-        self.pipeline = stable_diffusion_pipeline
-        self.eeg_model = eeg_model
+        self.brain_model = brain_model
         self.vision_model = vision_model
         self.adapter_model = adapter_model
 
@@ -642,11 +725,12 @@ class MultiAdapterPipeline:
     @torch.inference_mode()
     def get_encoder_embeds(
         self,
-        eeg_inputs: torch.FloatTensor,
-        vision_inputs: Union[Image.Image, List[Image.Image]],
+        eeg_values: torch.FloatTensor,
+        subjects: torch.Tensor,
+        pixel_values: Union[Image.Image, List[Image.Image]],
     ) -> Tuple[torch.Tensor]:
         assert (
-            eeg_inputs is not None and vision_inputs is not None
+            eeg_values is not None and pixel_values is not None
         ), "cond_inputs cannot be None"
 
         assert (
@@ -654,19 +738,19 @@ class MultiAdapterPipeline:
         ), "Got condition inputs but the processor is None"
 
         assert (
-            self.eeg_model is not None and self.vision_model is not None
+            self.brain_model is not None and self.vision_model is not None
         ), "Got condition inputs but the condition model is None"
 
         assert (
             self.adapter_model is not None
         ), "Got condition inputs but the adapter model is None"
 
-        eeg_tensors = self.eeg_processor(eeg_inputs).to(self.device, self.dtype)
+        eeg_tensors = self.eeg_processor(eeg_values).to(self.device, self.dtype)
         vision_tensors = self.vision_processor(
-            vision_inputs, return_tensors="pt"
+            pixel_values, return_tensors="pt"
         ).pixel_values
 
-        eeg_embeds = self.eeg_model(eeg_tensors)
+        eeg_embeds = self.brain_model(eeg_tensors, subjects=subjects)
         vision_embeds = self.vision_model(vision_tensors)
 
         cond_embeds = torch.cat([vision_embeds, eeg_embeds], dim=1)
@@ -679,8 +763,8 @@ class MultiAdapterPipeline:
 
     def __call__(
         self,
-        eeg_inputs: torch.FloatTensor,
-        vision_inputs: Union[Image.Image, List[Image.Image]],
+        eeg_values: torch.FloatTensor,
+        pixel_values: Union[Image.Image, List[Image.Image]],
         cond_embeds: Optional[torch.Tensor] = None,
         uncond_embeds: Optional[torch.Tensor] = None,
         num_images_per_prompt: Optional[int] = None,
@@ -691,54 +775,30 @@ class MultiAdapterPipeline:
     ):
         self.pipeline.to(self.device, self.dtype)
         if (
-            self.eeg_model is not None
+            self.brain_model is not None
             and self.vision_model is not None
             and self.adapter_model is not None
         ):
-            self.eeg_model.to(self.device, self.dtype)
+            self.brain_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
             self.vision_model.to(self.device, self.dtype)
 
         if cond_embeds is None and uncond_embeds is None:
             cond_embeds, uncond_embeds = self.get_encoder_embeds(
-                eeg_inputs, vision_inputs
+                eeg_values, pixel_values
             )
         elif cond_embeds is not None and uncond_embeds is None:
             raise ValueError("Got [cond_embeds], but [uncond_embeds] is missing")
         elif cond_embeds is None and uncond_embeds is not None:
             raise ValueError("Got [uncond_embeds], but [cond_embeds] is missing")
 
-        cond_embeds = cond_embeds.to(self.device, self.dtype)
-        uncond_embeds = uncond_embeds.to(self.device, self.dtype)
-
-        num_images_per_prompt = (
-            num_images_per_prompt if num_images_per_prompt is not None else 1
-        )
-
-        bs_embed, seq_len, _ = cond_embeds.shape
-
-        cond_embeds = cond_embeds.repeat(1, num_images_per_prompt, 1)
-        cond_embeds = cond_embeds.view(bs_embed * num_images_per_prompt, seq_len, -1)
-
-        uncond_embeds = uncond_embeds.repeat(1, num_images_per_prompt, 1)
-        uncond_embeds = uncond_embeds.view(
-            bs_embed * num_images_per_prompt, seq_len, -1
-        )
-
-        generator = get_generator(seed, device=self.device)
-
-        guidance_scale = guidance_scale if guidance_scale is not None else 7.5
-        num_inference_steps = (
-            num_inference_steps if num_inference_steps is not None else 50
-        )
-
-        images = self.pipeline(
-            prompt_embeds=cond_embeds,
-            negative_prompt_embeds=uncond_embeds,
-            guidance_scale=guidance_scale,
-            num_inference_steps=num_inference_steps,
-            generator=generator,
+        return classifier_free_generate(
+            self.pipeline,
+            cond_embeds,
+            uncond_embeds,
+            num_images_per_prompt,
+            seed,
+            guidance_scale,
+            num_inference_steps,
             **kwargs,
-        ).images
-
-        return images
+        )

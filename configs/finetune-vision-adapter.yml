@@ -24,9 +24,9 @@ logger:
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitAdapterModel
+  name: model.lightnings.LitVisionAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-1
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part-1
   
   snr_gamma: 5.0
   num_images_per_prompt: 4

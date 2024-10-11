@@ -97,10 +97,8 @@ class EEGImageNetDataset(Dataset):
             time_high=config.get("time_high", None),
         )
 
-        self.image_processor = (
-            CLIPImageProcessor.from_pretrained(config.clip_model_path)
-            if config.get("clip_model_path", None) is not None
-            else None
+        self.image_processor = CLIPImageProcessor.from_pretrained(
+            config.clip_model_path
         )
 
         if mode == "val" or mode == "test":
@@ -120,7 +118,7 @@ class EEGImageNetDataset(Dataset):
             ".".join([self.images[item["image"]], self.image_ext]),
         )
         raw_image = Image.open(image_path).convert("RGB")
-        vision_inputs = self.image_processor(
+        pixel_values = self.image_processor(
             images=raw_image, return_tensors="pt"
         ).pixel_values.squeeze(dim=0)
 
@@ -134,7 +132,8 @@ class EEGImageNetDataset(Dataset):
 
         data = {
             "eeg_values": eeg_inputs,
-            "pixel_values": vision_inputs,
+            "pixel_values": pixel_values,
+            "subjects": item["subject"],
             "labels": item["label"],
             "image_indexes": self.images[item["image"]],
         }
@@ -145,7 +144,7 @@ class EEGImageNetDataset(Dataset):
         return data
 
 
-class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
+class EEGImageNetDatasetForReconstruction(EEGImageNetDataset):
     def __init__(self, mode: str, config: DictConfig) -> None:
         super().__init__(mode, config)
 
@@ -189,9 +188,9 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         # handle drop to enhance classifier-free guidance
         drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
-        eeg_inputs = self.eeg_processor(item["eeg"], return_batches=False)
+        eeg_values = self.eeg_processor(item["eeg"], return_batches=False)
 
-        data = {"conditions": eeg_inputs}
+        data = {"eeg_values": eeg_values, "subjects": item["subject"]}
 
         if self.mode == "train":
             data["drops"] = drops
@@ -204,7 +203,7 @@ class EEGImageNetDatasetForGeneration(EEGImageNetDataset):
         return data
 
 
-class EEGImageNetDatasetForMixedInput(EEGImageNetDataset):
+class EEGImageNetDatasetForStylization(EEGImageNetDataset):
     def __init__(self, mode: str, config: DictConfig):
         super().__init__(mode, config)
 
@@ -248,10 +247,16 @@ class EEGImageNetDatasetForMixedInput(EEGImageNetDataset):
         # handle drop to enhance classifier-free guidance
         drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
-        eeg_input = self.eeg_processor(item["eeg"], return_batches=False)
-        vision_input = self.image_processor(raw_image, return_tensors="pt").pixel_values
+        eeg_values = self.eeg_processor(item["eeg"], return_batches=False)
+        clip_pixel_values = self.image_processor(
+            raw_image, return_tensors="pt"
+        ).pixel_values
 
-        data = {"eeg_input": eeg_input, "vision_input": vision_input}
+        data = {
+            "eeg_values": eeg_values,
+            "clip_pixel_values": clip_pixel_values,
+            "subjects": item["subject"],
+        }
 
         if self.mode == "train":
             data["drops"] = drops
@@ -262,6 +267,7 @@ class EEGImageNetDatasetForMixedInput(EEGImageNetDataset):
             data["image_indexes"] = self.images[item["image"]]
 
         return data
+
 
 class ImageDataset(Dataset):
     def __init__(self, mode: str, config: DictConfig) -> None:
@@ -295,7 +301,7 @@ class ImageDataset(Dataset):
         )
 
         self.cond_processor = CLIPImageProcessor.from_pretrained(
-            config.condition_model_path
+            config.clip_model_path
         )
 
         self.drop_probability: float = config.drop_probability
@@ -319,14 +325,14 @@ class ImageDataset(Dataset):
         )
 
         # for vision condition
-        conditions: torch.FloatTensor = self.cond_processor(
+        clip_pixel_values: torch.FloatTensor = self.cond_processor(
             images=raw_image, return_tensors="pt"
         ).pixel_values
 
         # handle drop to enhance classifier-free guidance
         drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
-        data = {"conditions": conditions.squeeze(dim=0)}
+        data = {"clip_pixel_values": clip_pixel_values.squeeze(dim=0)}
 
         if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)
@@ -408,14 +414,14 @@ class TarImageDataset(Dataset):
         )
 
         # for vision condition
-        conditions: torch.FloatTensor = self.cond_processor(
+        clip_pixel_values: torch.FloatTensor = self.cond_processor(
             images=raw_image, return_tensors="pt"
         ).pixel_values
 
         # handle drop to enhance classifier-free guidance
         drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
 
-        data = {"conditions": conditions.squeeze(dim=0)}
+        data = {"clip_pixel_values": clip_pixel_values.squeeze(dim=0)}
 
         if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)

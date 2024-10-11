@@ -17,17 +17,19 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
 )
+from transformers import CLIPVisionModelWithProjection
 
 
 from model.activations import compute_snr, get_class
 from model.models import (
     TransformerEncoderModel,
-    CLIPVisionModel,
-    SingleAdapterModel,
+    VisionAdapterModel,
+    BrainAdapterModel,
     MultiAdapterModel,
     PreTrainedModel,
     PytorchVisionModel,
-    AdapterPipeline,
+    VisionAdapterPipeline,
+    BrainAdapterPipeline,
     MultiAdapterPipeline,
 )
 from model.modules import VisionAttnProcessor
@@ -138,7 +140,7 @@ class LitBrainKDModel(LitBaseModel):
         else:
             self.model = TransformerEncoderModel(config=config.model)
 
-        self.vision_model = CLIPVisionModel.from_pretrained(
+        self.vision_model = CLIPVisionModelWithProjection.from_pretrained(
             config.lightning.clip_model_path
         )
 
@@ -148,20 +150,22 @@ class LitBrainKDModel(LitBaseModel):
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, pixel_values = (
+        eeg_values, pixel_values, subjects = (
             batch["eeg_values"],
             batch["pixel_values"],
+            batch["subjects"],
         )
         batch_size = eeg_values.shape[0]
-        eeg_embeds: torch.Tensor = self.model(eeg_values)
+        eeg_embeds: torch.Tensor = self.model(eeg_values, subjects=subjects)
 
         # get teacher encoder embeds
         with torch.no_grad():
-            vision_embeds: torch.Tensor = self.vision_model(pixel_values)
+            vision_embeds: torch.Tensor = self.vision_model(pixel_values).image_embeds
 
-        loss = nn.functional.cosine_embedding_loss(
-            eeg_embeds, vision_embeds, torch.ones(batch_size, device=self.device)
-        ) + nn.functional.mse_loss(eeg_embeds, vision_embeds)
+        # loss = nn.functional.cosine_embedding_loss(
+        #     eeg_embeds, vision_embeds, torch.ones(batch_size, device=self.device)
+        # ) + nn.functional.mse_loss(eeg_embeds, vision_embeds)
+        loss = nn.functional.mse_loss(eeg_embeds, vision_embeds)
 
         return {
             "loss": loss,
@@ -215,7 +219,7 @@ class LitBrainKDModel(LitBaseModel):
         return loss
 
 
-class LitEEGClsModel(LitBaseModel):
+class LitBrainClsModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
@@ -266,7 +270,7 @@ class LitEEGClsModel(LitBaseModel):
         return model_outputs
 
 
-class LitAdapterModel(LitBaseModel):
+class LitDiffusionModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.diffusion_model_path = config.lightning.diffusion_model_path
@@ -283,33 +287,14 @@ class LitAdapterModel(LitBaseModel):
             self.diffusion_model_path, subfolder="scheduler"
         )
 
-        self.condition_encoder: Union[CLIPVisionModel, TransformerEncoderModel] = (
-            get_class(config.lightning.condition_model.name).from_pretrained(
-                config.lightning.condition_model.model_path
-            )
-        )
-
         self.unet.requires_grad_(False)
         self.vae.requires_grad_(False)
-        self.condition_encoder.requires_grad_(False)
 
-        # load from pretrained model
-        if config.lightning.get("pretrained_model_path", None) is not None:
-            self.model: SingleAdapterModel = SingleAdapterModel.from_pretrained(
-                config.lightning.pretrained_model_path
-            )
-            self.model.bind_unet(self.unet)
-        # load from unet
-        else:
-            self.model: SingleAdapterModel = SingleAdapterModel.from_unet(
-                self.unet, config.model
-            )
+        self.model = None
 
-        self.model.train()
-
-    @override
-    def forward(self, batch) -> Dict:
-        pixel_values = batch["pixel_values"]
+    def forward_loss(
+        self, pixel_values: torch.FloatTensor, prompt_embeds: torch.Tensor
+    ) -> torch.Tensor:
         # Encode pixel values into latent space
         with torch.no_grad():
             latents = self.vae.encode(pixel_values).latent_dist.sample()
@@ -331,25 +316,10 @@ class LitAdapterModel(LitBaseModel):
         # (this is the forward diffusion process)
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
 
-        conditions, drops = (batch["conditions"], batch["drops"])
-
-        with torch.no_grad():
-            encoder_outputs = self.condition_encoder(conditions)
-
-        cond_embeds = torch.stack(
-            tuple(
-                torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
-                for encoder_output, drop in zip(encoder_outputs, drops)
-            ),
-            dim=0,
-        )
-
-        cond_embeds: torch.FloatTensor = self.model(cond_embeds)
-
         noise_pred: torch.Tensor = self.unet(
             noisy_latents,
             timesteps,
-            cond_embeds,
+            prompt_embeds,
             return_dict=False,
         )[0]
 
@@ -376,7 +346,7 @@ class LitAdapterModel(LitBaseModel):
             loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
             loss = loss.mean()
 
-        return {"loss": loss}
+        return loss
 
     def generate(
         self,
@@ -386,38 +356,7 @@ class LitAdapterModel(LitBaseModel):
         num_images_per_prompt: Optional[int] = None,
         **kwargs,
     ):
-        pipeline = AdapterPipeline(
-            StableDiffusionPipeline.from_pretrained(
-                self.diffusion_model_path,
-                unet=self.unet,
-                vae=self.vae,
-                safety_checker=None,
-            ),
-            device=self.device,
-            dtype=self.dtype,
-        )
-
-        conditions = batch["conditions"]
-
-        # get condition embeds
-        with torch.inference_mode():
-            cond_embeds = self.condition_encoder(conditions)
-        uncond_embeds = torch.zeros_like(cond_embeds)
-
-        with torch.inference_mode():
-            cond_embeds = self.model(cond_embeds)
-            uncond_embeds = self.model(uncond_embeds)
-
-        images = pipeline(
-            cond_embeds=cond_embeds,
-            uncond_embeds=uncond_embeds,
-            seed=seed,
-            num_inference_steps=num_inference_steps,
-            num_images_per_prompt=num_images_per_prompt,
-            **kwargs,
-        )
-
-        return images
+        raise NotImplementedError("You should implement this method in the subclasses")
 
     @override
     @rank_zero_only
@@ -470,33 +409,230 @@ class LitAdapterModel(LitBaseModel):
                     image.save(save_path)
 
 
-class LitMultiAdapterModel(LitBaseModel):
+class LitVisionAdapterModel(LitDiffusionModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.diffusion_model_path = config.lightning.diffusion_model_path
-        self.snr_gamma = config.lightning.get("snr_gamma", None)
 
-        self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
-            self.diffusion_model_path, subfolder="unet"
-        )
-
-        self.vae: AutoencoderKL = AutoencoderKL.from_pretrained(
-            self.diffusion_model_path, subfolder="vae"
-        )
-        self.noise_scheduler = DDPMScheduler.from_pretrained(
-            self.diffusion_model_path, subfolder="scheduler"
+        self.vision_model: CLIPVisionModelWithProjection = (
+            CLIPVisionModelWithProjection.from_pretrained(
+                config.lightning.clip_model_path
+            )
         )
 
-        self.vision_encoder = CLIPVisionModel.from_pretrained(
-            config.lightning.vision_model_path
+        # load from pretrained model
+        if config.lightning.get("pretrained_model_path", None) is not None:
+            self.model: VisionAdapterModel = VisionAdapterModel.from_pretrained(
+                config.lightning.pretrained_model_path
+            )
+            self.model.bind_unet(self.unet)
+        # load from unet
+        else:
+            self.model: VisionAdapterModel = VisionAdapterModel.from_unet(
+                self.unet, config.model
+            )
+
+        self.vision_model.requires_grad_(False)
+        self.model.train()
+
+    @override
+    def forward(self, batch) -> Dict:
+        pixel_values, clip_pixel_values, drops = (
+            batch["pixel_values"],
+            batch["clip_pixel_values"],
+            batch["drops"],
         )
-        self.eeg_encoder = TransformerEncoderModel.from_pretrained(
-            config.lightning.eeg_model_path
+
+        with torch.no_grad():
+            encoder_outputs = self.vision_model(clip_pixel_values).image_embeds
+
+        cond_embeds = torch.stack(
+            tuple(
+                torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
+                for encoder_output, drop in zip(encoder_outputs, drops)
+            ),
+            dim=0,
         )
-        self.unet.requires_grad_(False)
-        self.vae.requires_grad_(False)
-        self.vision_encoder.requires_grad_(False)
-        self.eeg_encoder.requires_grad_(False)
+        cond_embeds: torch.FloatTensor = self.model(cond_embeds)
+
+        loss = self.forward_loss(pixel_values, cond_embeds)
+
+        return {"loss": loss}
+
+    @override
+    def generate(
+        self,
+        batch,
+        seed: Optional[int] = None,
+        num_inference_steps: Optional[int] = None,
+        num_images_per_prompt: Optional[int] = None,
+        **kwargs,
+    ):
+        pipeline = VisionAdapterPipeline(
+            StableDiffusionPipeline.from_pretrained(
+                self.diffusion_model_path,
+                unet=self.unet,
+                vae=self.vae,
+                safety_checker=None,
+            ),
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        clip_pixel_values = batch["clip_pixel_values"]
+
+        # get condition embeds
+        with torch.inference_mode():
+            cond_embeds = self.vision_model(clip_pixel_values).image_embeds
+        uncond_embeds = torch.zeros_like(cond_embeds)
+
+        with torch.inference_mode():
+            cond_embeds = self.model(cond_embeds)
+            uncond_embeds = self.model(uncond_embeds)
+
+        images = pipeline(
+            cond_embeds=cond_embeds,
+            uncond_embeds=uncond_embeds,
+            seed=seed,
+            num_inference_steps=num_inference_steps,
+            num_images_per_prompt=num_images_per_prompt,
+            **kwargs,
+        )
+
+        return images
+
+
+class LitBrainAdapterModel(LitDiffusionModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.brain_model = TransformerEncoderModel.from_pretrained(
+            config.lightning.brain_model_path
+        )
+
+        # load from pretrained model, can be vision adapter or brain adapter
+        if config.lightning.get("pretrained_model_path", None) is not None:
+            self.model: BrainAdapterModel = BrainAdapterModel.from_pretrained(
+                config.lightning.pretrained_model_path
+            )
+            self.model.bind_unet(self.unet)
+        # load from unet
+        else:
+            self.model: BrainAdapterModel = BrainAdapterModel.from_unet(
+                self.unet, config.model
+            )
+
+        self.brain_model.requires_grad_(False)
+        self.model.train()
+
+    @override
+    def forward(self, batch) -> Dict:
+        pixel_values, eeg_values, subjects, drops = (
+            batch["pixel_values"],
+            batch["eeg_values"],
+            batch["subjects"],
+            batch["drops"],
+        )
+
+        with torch.no_grad():
+            encoder_outputs = self.brain_model(eeg_values, subjects=subjects)
+
+        cond_embeds = torch.stack(
+            tuple(
+                torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
+                for encoder_output, drop in zip(encoder_outputs, drops)
+            ),
+            dim=0,
+        )
+        cond_embeds: torch.FloatTensor = self.model(cond_embeds)
+
+        loss = self.forward_loss(pixel_values, cond_embeds)
+
+        return {"loss": loss}
+
+    @override
+    def generate(
+        self,
+        batch,
+        seed: Optional[int] = None,
+        num_inference_steps: Optional[int] = None,
+        num_images_per_prompt: Optional[int] = None,
+        **kwargs,
+    ):
+        pipeline = BrainAdapterPipeline(
+            StableDiffusionPipeline.from_pretrained(
+                self.diffusion_model_path,
+                unet=self.unet,
+                vae=self.vae,
+                safety_checker=None,
+            ),
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        eeg_values, subjects = (batch["eeg_values"], batch["subjects"])
+        # get condition embeds
+        with torch.inference_mode():
+            cond_embeds = self.brain_model(eeg_values, subjects=subjects)
+        uncond_embeds = torch.zeros_like(cond_embeds)
+
+        with torch.inference_mode():
+            cond_embeds = self.model(cond_embeds)
+            uncond_embeds = self.model(uncond_embeds)
+
+        images = pipeline(
+            cond_embeds=cond_embeds,
+            uncond_embeds=uncond_embeds,
+            seed=seed,
+            num_inference_steps=num_inference_steps,
+            num_images_per_prompt=num_images_per_prompt,
+            **kwargs,
+        )
+
+        return images
+
+    @override
+    @rank_zero_only
+    def test_step(self, batch, batch_idx):
+        # parameters for generation process
+        num_images_per_prompt = self.config.lightning.get("num_images_per_prompt", 1)
+        seed = self.config.trainer.get("seed", None)
+        num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
+
+        save_dir = self.logger.log_dir
+
+        images: Image.Image = self.generate(
+            batch, seed, num_inference_steps, num_images_per_prompt
+        )
+        image_indexes, subjects = (batch["image_indexes"], batch["subjects"])
+
+        batch_size = len(image_indexes)
+
+        if save_dir is not None:
+            save_directory = os.path.join(save_dir, "images")
+            if not os.path.exists(save_directory):
+                os.makedirs(save_directory)
+            # save generated images
+            for i in range(batch_size):
+                for j in range(num_images_per_prompt):
+                    image: Image = images[i * num_images_per_prompt + j]
+                    save_path = os.path.join(
+                        save_directory, f"{image_indexes[i]}-{subjects[i]}-{j}.png"
+                    )
+                    image.save(save_path)
+
+
+class LitMultiAdapterModel(LitDiffusionModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.vision_model: CLIPVisionModelWithProjection = (
+            CLIPVisionModelWithProjection.from_pretrained(
+                config.lightning.clip_model_path
+            )
+        )
+        self.brain_model: TransformerEncoderModel = (
+            TransformerEncoderModel.from_pretrained(config.lightning.brain_model_path)
+        )
 
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
@@ -511,82 +647,43 @@ class LitMultiAdapterModel(LitBaseModel):
             )
 
         self.model.train()
+        self.vision_model.requires_grad_(False)
+        self.brain_model.requires_grad_(False)
 
     @override
     def forward(self, batch) -> Dict:
         pixel_values = batch["pixel_values"]
-        # Encode pixel values into latent space
-        with torch.no_grad():
-            latents = self.vae.encode(pixel_values).latent_dist.sample()
-            latents: torch.Tensor = latents * self.vae.config.scaling_factor
 
-        # Sample noise that we'll add to the latents
-        noise = torch.randn_like(latents)
-        bsz = latents.shape[0]
-
-        # Sample a random timestep for each image
-        timesteps = torch.randint(
-            0,
-            self.noise_scheduler.config.num_train_timesteps,
-            (bsz,),
-            device=latents.device,
-        )
-        timesteps = timesteps.long()
-        # Add noise to the latents according to the noise magnitude at each timestep
-        # (this is the forward diffusion process)
-        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
-
-        vision_input, eeg_input, drops = (
-            batch["vision_input"],
-            batch["eeg_input"],
+        pixel_values, clip_pixel_values, eeg_values, subjects, drops = (
+            batch["pixel_values"],
+            batch["clip_pixel_values"],
+            batch["eeg_values"],
+            batch["subjects"],
             batch["drops"],
         )
 
         with torch.no_grad():
-            vision_embeds = self.vision_encoder(vision_input)
-            eeg_embeds = self.eeg_encoder(eeg_input)
+            vision_embeds = self.vision_model(clip_pixel_values).image_embeds
+            brain_embeds = self.brain_model(eeg_values, subjects=subjects)
 
-        mixed_embeds = torch.cat([vision_embeds, eeg_embeds], dim=1)
-
-        cond_embeds = torch.stack(
+        vision_embeds = torch.stack(
             tuple(
                 torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
-                for encoder_output, drop in zip(mixed_embeds, drops)
+                for encoder_output, drop in zip(vision_embeds, drops)
+            ),
+            dim=0,
+        )
+        brain_embeds = torch.stack(
+            tuple(
+                torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
+                for encoder_output, drop in zip(brain_embeds, drops)
             ),
             dim=0,
         )
 
-        cond_embeds: torch.FloatTensor = self.model(cond_embeds)
+        cond_embeds: torch.FloatTensor = self.model(vision_embeds, brain_embeds)
 
-        noise_pred: torch.Tensor = self.unet(
-            noisy_latents,
-            timesteps,
-            cond_embeds,
-            return_dict=False,
-        )[0]
-
-        if self.snr_gamma is None:
-            loss = nn.functional.mse_loss(
-                noise_pred.float(), noise.float(), reduction="mean"
-            )
-        else:
-            # Compute loss-weights as per Section 3.4 of https://arxiv.org/abs/2303.09556.
-            # Since we predict the noise instead of x_0, the original formulation is slightly changed.
-            # This is discussed in Section 4.2 of the same paper.
-            snr = compute_snr(self.noise_scheduler, timesteps)
-            mse_loss_weights = torch.stack(
-                [snr, self.snr_gamma * torch.ones_like(timesteps)], dim=1
-            ).min(dim=1)[0]
-            if self.noise_scheduler.config.prediction_type == "epsilon":
-                mse_loss_weights = mse_loss_weights / snr
-            elif self.noise_scheduler.config.prediction_type == "v_prediction":
-                mse_loss_weights = mse_loss_weights / (snr + 1)
-
-            loss = nn.functional.mse_loss(
-                noise_pred.float(), noise.float(), reduction="none"
-            )
-            loss = loss.mean(dim=list(range(1, len(loss.shape)))) * mse_loss_weights
-            loss = loss.mean()
+        loss = self.forward_loss(pixel_values, cond_embeds)
 
         return {"loss": loss}
 
@@ -609,19 +706,22 @@ class LitMultiAdapterModel(LitBaseModel):
             dtype=self.dtype,
         )
 
-        vision_input, eeg_input = batch["vision_input"], batch["eeg_input"]
+        clip_pixel_values, eeg_values, subjects = (
+            batch["clip_pixel_values"],
+            batch["eeg_values"],
+            batch["subjects"],
+        )
 
         # get condition embeds
         with torch.inference_mode():
-            vision_embeds = self.vision_encoder(vision_input)
-            eeg_embeds = self.eeg_encoder(eeg_input)
-
-        mixed_embeds = torch.cat([vision_embeds, eeg_embeds], dim=1)
-        uncond_embeds = torch.zeros_like(mixed_embeds)
+            vision_embeds = self.vision_encoder(clip_pixel_values).image_embeds
+            brain_embeds = self.eeg_encoder(eeg_values, subjects=subjects)
 
         with torch.inference_mode():
-            cond_embeds = self.model(mixed_embeds)
-            uncond_embeds = self.model(uncond_embeds)
+            cond_embeds = self.model(vision_embeds, brain_embeds)
+            uncond_embeds = self.model(
+                torch.zeros_like(vision_embeds), torch.zeros_like(brain_embeds)
+            )
 
         images = pipeline(
             cond_embeds=cond_embeds,
@@ -634,28 +734,6 @@ class LitMultiAdapterModel(LitBaseModel):
 
         return images
     
-
-    @override
-    @rank_zero_only
-    def validation_step(self, batch, batch_idx):
-        seed = self.config.trainer.get("seed", None)
-        num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
-
-        images: torch.Tensor = self.generate(
-            batch, seed, num_inference_steps, output_type="pt"
-        )
-        images = images.cpu()
-        ground_truth = batch["ground_truth"].cpu()
-
-        image_grid = torchvision.utils.make_grid(
-            torch.cat([ground_truth, images], dim=0), nrow=images.shape[0], padding=4
-        )
-
-        # log images to tensorboard logger
-        self.logger.experiment.add_image(
-            f"image_grid-{batch_idx}", image_grid, self.global_step, dataformats="CHW"
-        )
-
     @override
     @rank_zero_only
     def test_step(self, batch, batch_idx):
@@ -669,7 +747,8 @@ class LitMultiAdapterModel(LitBaseModel):
         images: Image.Image = self.generate(
             batch, seed, num_inference_steps, num_images_per_prompt
         )
-        image_indexes = batch["image_indexes"]
+        image_indexes, subjects = (batch["image_indexes"], batch["subjects"])
+
         batch_size = len(image_indexes)
 
         if save_dir is not None:
@@ -681,17 +760,20 @@ class LitMultiAdapterModel(LitBaseModel):
                 for j in range(num_images_per_prompt):
                     image: Image = images[i * num_images_per_prompt + j]
                     save_path = os.path.join(
-                        save_directory, f"{image_indexes[i]}-{j}.png"
+                        save_directory, f"{image_indexes[i]}-{subjects[i]}-{j}.png"
                     )
                     image.save(save_path)
+
 
 class LitEvaluationModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.model: Union[PytorchVisionModel, CLIPVisionModel] = get_class(
-            config.lightning.evaluation_model.name
-        ).from_pretrained(config.lightning.evaluation_model.pretrained_model_path)
+        self.model: Union[PytorchVisionModel, CLIPVisionModelWithProjection] = (
+            get_class(config.lightning.evaluation_model.name).from_pretrained(
+                config.lightning.evaluation_model.pretrained_model_path
+            )
+        )
 
         self.task: str = config.lightning.task.name
         self.task_params: Dict = OmegaConf.to_object(config.lightning.task.params)

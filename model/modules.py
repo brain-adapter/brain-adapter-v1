@@ -85,7 +85,7 @@ class EEGEmebeddingsWithMOE(nn.Module):
         )
 
         self.num_patches = config.num_samples // config.patch_size
-        self.num_positions = self.num_patches
+        self.num_positions = self.num_patches + 1
 
         # For each subject, there will be a class embedding, but problem also occurs when coming across with
         #  unseen subjects.
@@ -100,9 +100,9 @@ class EEGEmebeddingsWithMOE(nn.Module):
             persistent=False,
         )
 
-    def forward(self, values: torch.Tensor, subject: torch.Tensor):
+    def forward(self, values: torch.Tensor, subjects: torch.Tensor):
         class_embeds = torch.stack(
-            [self.class_embedding[s] for s in subject]
+            [self.class_embedding[s] for s in subjects]
         ).unsqueeze(dim=1)
 
         patch_embeds = (
@@ -293,7 +293,7 @@ class EEGTransformer(nn.Module):
         self.pool_type = config.get("pool_type", "cls")
 
         # learnable pos embedding is more compatible for EEG features
-        self.embeddings = EEGEmbeddings(config)
+        self.embeddings = EEGEmebeddingsWithMOE(config)
         self.pre_layernorm = nn.LayerNorm(config.hidden_size)
 
         self.block = SelfAttentionBlock(config)
@@ -303,9 +303,10 @@ class EEGTransformer(nn.Module):
     def forward(
         self,
         eeg_values: torch.Tensor,
+        subjects: torch.Tensor,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[Union[torch.FloatTensor, Tuple[torch.FloatTensor]]]:
-        hidden_states = self.embeddings(eeg_values)
+        hidden_states = self.embeddings(eeg_values, subjects - 1)
 
         encoder_outputs: Tuple = self.block(
             hidden_states, output_attentions=output_attentions

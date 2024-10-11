@@ -19,13 +19,13 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-adapter-4
+    name: brain-adapter
     version: 5-95
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitAdapterModel
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-finetune
+  name: model.lightnings.LitBrainAdapterModel
+  pretrained_model_path: null # for finetuning
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
 
   snr_gamma: 5.0
@@ -33,15 +33,11 @@ lightning:
   num_validation_images: 8
   num_inference_steps: 50
 
-  projection_trainable: false
-
-  condition_model:
-    name: model.models.TransformerEncoderModel
-    model_path: /root/autodl-tmp/pretrained/eeg-model-finetune-4
+  brain_model_path: /root/autodl-tmp/pretrained/brain-model
 
 model:
   projection_config:
-    input_dim: 512
+    input_dim: 768
     num_tokens: 4
 
 

@@ -24,7 +24,7 @@ logger:
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitAdapterModel
+  name: model.lightnings.LitVisionAdapterModel
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
   pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-1
   
@@ -32,9 +32,7 @@ lightning:
   num_images_per_prompt: 4
   num_inference_steps: 30
 
-  condition_model:
-    name: model.models.VisionModelWithProjection
-    model_path: &condition_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
 
 model:
   diffusion_model_path: *diffusion_model_path
@@ -54,7 +52,7 @@ dataset:
     train: /root/autodl-tmp/data/laion-aesthetics/train
     val: /root/autodl-tmp/data/laion-aesthetics/validation
 
-  condition_model_path: *condition_model_path
+  clip_model_path: *clip_model_path
 
   drop_probability: 0.1
 
