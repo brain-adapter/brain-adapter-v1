@@ -32,7 +32,6 @@ from model.models import (
     BrainAdapterPipeline,
     MultiAdapterPipeline,
 )
-from model.modules import VisionAttnProcessor
 from model.evaluation import get_evaluation
 
 
