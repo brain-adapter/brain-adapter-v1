@@ -242,32 +242,6 @@ class LitBrainClsModel(LitBaseModel):
 
         return {"logits": logits, "loss": loss, "acc": acc}
 
-    @override
-    def training_step(self, batch, batch_idx) -> Dict:
-        model_outputs = super().training_step(batch, batch_idx)
-
-        self.log("train_acc", model_outputs["acc"], on_epoch=True, on_step=False)
-
-        return model_outputs
-
-    @override
-    @rank_zero_only
-    def validation_step(self, batch, batch_idx) -> Dict:
-        model_outputs = super().validation_step(batch, batch_idx)
-
-        self.log("val_acc", model_outputs["acc"], on_epoch=True, on_step=False)
-
-        return model_outputs
-
-    @override
-    @rank_zero_only
-    def test_step(self, batch, batch_idx) -> Dict:
-        model_outputs = super().test_step(batch, batch_idx)
-
-        self.log("test_acc", model_outputs["acc"], on_epoch=True, on_step=False)
-
-        return model_outputs
-
 
 class LitDiffusionModel(LitBaseModel):
     def __init__(self, config: DictConfig):

@@ -54,7 +54,7 @@ dataset:
 
   clip_model_path: *clip_model_path
 
-  drop_probability: 0.1
+  drop_probability: 0.05
 
 # constant learning rate
 optimizer:
