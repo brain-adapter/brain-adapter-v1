@@ -675,8 +675,8 @@ class BrainAdapterPipeline(AdapterPipeline):
         **kwargs,
     ):
         self.pipeline.to(self.device, self.dtype)
-        if self.vision_model is not None and self.adapter_model is not None:
-            self.vision_model.to(self.device, self.dtype)
+        if self.brain_model is not None and self.adapter_model is not None:
+            self.brain_model.to(self.device, self.dtype)
             self.adapter_model.to(self.device, self.dtype)
 
         if cond_embeds is None and uncond_embeds is None:

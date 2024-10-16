@@ -1,32 +1,19 @@
 trainer:
-  task: train_only
+  task: test_only
   seed: 2024
-  save_directory: /root/autodl-tmp/pretrained
-  check_val_every_n_epoch: 1
-  max_epochs: 2
   num_devices: 1
-
-  checkpoint:
-    dirpath: /root/autodl-tmp/ckpts
-    monitor: step
-    filename: lit-{step}
-    save_top_k: 1
-    mode: max
-    every_n_epochs: 1
-    save_last: true
 
 # for Tensorboard logger
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-adapter
+    name: test-brain-adapter
     version: 5-95
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitBrainAdapterModel
-  # employ pretrained vision adapter
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part1
+  pretrained_model_path: /root/autodl-tmp/pretrained/brain-adapter
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
 
   snr_gamma: 5.0
@@ -45,18 +32,14 @@ dataset:
   resolution: 512
   batch_size: 4
   image_ext: JPEG
-  subject: 0
+  subject: 4
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
 
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
   diffusion_model_path: *diffusion_model_path
-
-  merge_train_and_val: true
-
-  drop_probability: 0.05
 
 # constant learning rate
 optimizer:
