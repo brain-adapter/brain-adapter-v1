@@ -101,11 +101,6 @@ class EEGImageNetDataset(Dataset):
             config.clip_model_path
         )
 
-        if mode == "val" or mode == "test":
-            self.splitter = random.sample(
-                self.splitter, config.get("num_validation_images", 32)
-            )
-
     def __len__(self):
         return len(self.splitter)
 

@@ -25,7 +25,7 @@ logger:
 
 lightning:
   name: model.lightnings.LitBrainAdapterModel
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part-0
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part1
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
 
   snr_gamma: 5.0
@@ -52,6 +52,8 @@ dataset:
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
+
+  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
   diffusion_model_path: *diffusion_model_path
 
   merge_train_and_val: true

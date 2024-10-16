@@ -174,6 +174,9 @@ class LitBrainKDModel(LitBaseModel):
 
     @rank_zero_only
     def validation_step(self, batch, batch_idx) -> Dict:
+        if not self.config.lightning.get("log_clip_logits", False):
+            return super().validation_step(batch, batch_idx)
+
         model_outputs: Dict = self(batch)
         loss, eeg_embeds, vision_embeds, labels = (
             model_outputs["loss"],
@@ -334,6 +337,9 @@ class LitDiffusionModel(LitBaseModel):
     @override
     @rank_zero_only
     def validation_step(self, batch, batch_idx):
+        if not self.config.lightning.get("log_val_images", False):
+            return None
+        
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 

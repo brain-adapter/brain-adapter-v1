@@ -281,7 +281,7 @@ class AdapterModel(PreTrainedModel):
     ):
         # update cross attention dim
         OmegaConf.update(
-            config.proj_config,
+            config.projection_config,
             "cross_attention_dim",
             unet.config.cross_attention_dim,
         )
@@ -335,7 +335,7 @@ class AdapterModel(PreTrainedModel):
 class VisionAdapterModel(AdapterModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.projection = AdapterProjection(config.proj_config)
+        self.projection = AdapterProjection(config.projection_config)
 
         self.apply(self._init_weights)
 
@@ -346,7 +346,7 @@ class VisionAdapterModel(AdapterModel):
 class BrainAdapterModel(AdapterModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.projection = AdapterProjection(config.proj_config)
+        self.projection = AdapterProjection(config.projection_config)
 
         self.apply(self._init_weights)
 
@@ -358,8 +358,8 @@ class MultiAdapterModel(AdapterModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.vision_proj = AdapterProjection(config.vision_proj)
-        self.eeg_proj = AdapterProjection(config.eeg_proj)
+        self.vision_proj = AdapterProjection(config.vision_projection_config)
+        self.eeg_proj = AdapterProjection(config.eeg_projection_config)
 
         self.apply(self._init_weights)
 
