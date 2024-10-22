@@ -1,7 +1,7 @@
 trainer:
   task: train_and_test_with_best
   seed: 2024
-  save_directory: /root/autodl-tmp/pretrained/brain-kd
+  save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: &interval 2
   max_epochs: &max_epochs 30
   num_devices: 1
@@ -19,7 +19,7 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-kd
+    name: brain-model-all
     version: 5-95
     default_hp_metric: false
 
@@ -28,6 +28,8 @@ lightning:
 
   pretrained_model_path: null
   clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+
+  log_clip_logits: true
 
 
 model:
@@ -42,20 +44,17 @@ model:
   num_layers: 6
   num_attention_heads: 12
   mlp_ratio: 1.0
-  dropout: 0.1
+  dropout: 0.5
   act_fn: gelu
 
   projection_dim: 768
-
-  output_key: 0
-  pool_type: cls
 
 dataset: 
   name: data.dataset.EEGImageNetDataset
 
   num_workers: 2 # num_devices * 2
   subject: 0 # 0 means using data of all subjects
-  batch_size: 8
+  batch_size: 16
 
   image_ext: JPEG
 

@@ -29,11 +29,8 @@ class EEGEmbeddings(nn.Module):
         self.num_patches = config.num_samples // config.patch_size
         self.num_positions = self.num_patches
 
-        if config.pool_type == "cls":
-            self.class_embedding = nn.Parameter(torch.randn(self.embed_dim))
-            self.num_positions = self.num_positions + 1
-        else:
-            self.register_parameter("class_embedding", None)
+        self.class_embedding = nn.Parameter(torch.randn(self.embed_dim))
+        self.num_positions = self.num_positions + 1
 
         self.position_embedding = nn.Embedding(self.num_positions, self.embed_dim)
         self.register_buffer(
@@ -45,19 +42,13 @@ class EEGEmbeddings(nn.Module):
     def forward(self, values: torch.Tensor):
         batch_size = values.shape[0]
 
-        embeds = []
-
-        if self.class_embedding is not None:
-            class_embeds = self.class_embedding.expand(batch_size, 1, -1)
-            embeds.append(class_embeds)
+        class_embeds = self.class_embedding.expand(batch_size, 1, -1)
 
         patch_embeds = (
             self.patch_embedding(values).transpose(1, 2).contiguous()
         )  # shape = [batch_size, num_sequence, embed_dim]
 
-        embeds.append(patch_embeds)
-
-        embeds = torch.cat(embeds, dim=1)
+        embeds = torch.cat([class_embeds, patch_embeds], dim=1)
 
         embeds = embeds + self.position_embedding(self.position_ids)
         return embeds
@@ -288,7 +279,42 @@ class EEGTransformer(nn.Module):
         super().__init__()
 
         self.config = config
-        self.pool_type = config.get("pool_type", "cls")
+
+        # learnable pos embedding is more compatible for EEG features
+        self.embeddings = EEGEmbeddings(config)
+        self.pre_layernorm = nn.LayerNorm(config.hidden_size)
+
+        self.block = SelfAttentionBlock(config)
+
+        self.post_layernorm = nn.LayerNorm(config.hidden_size)
+
+    def forward(
+        self,
+        eeg_values: torch.Tensor,
+        output_attentions: Optional[bool] = False,
+    ) -> Tuple[Union[torch.FloatTensor, Tuple[torch.FloatTensor]]]:
+        hidden_states = self.embeddings(eeg_values)
+
+        encoder_outputs: Tuple = self.block(
+            hidden_states, output_attentions=output_attentions
+        )
+
+        last_hidden_state: torch.Tensor = encoder_outputs[0]
+
+        pooled_output = last_hidden_state[:, 0, :]
+        pooled_output = self.post_layernorm(pooled_output)
+
+        return (
+            pooled_output,
+            last_hidden_state,
+        ) + encoder_outputs[1:]
+
+
+class EEGMOETransformer(nn.Module):
+    def __init__(self, config: DictConfig):
+        super().__init__()
+
+        self.config = config
 
         # learnable pos embedding is more compatible for EEG features
         self.embeddings = EEGEmebeddingsWithMOE(config)
@@ -304,7 +330,7 @@ class EEGTransformer(nn.Module):
         subjects: torch.Tensor,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[Union[torch.FloatTensor, Tuple[torch.FloatTensor]]]:
-        hidden_states = self.embeddings(eeg_values, subjects - 1)
+        hidden_states = self.embeddings(eeg_values, subjects)
 
         encoder_outputs: Tuple = self.block(
             hidden_states, output_attentions=output_attentions
@@ -312,20 +338,13 @@ class EEGTransformer(nn.Module):
 
         last_hidden_state: torch.Tensor = encoder_outputs[0]
 
-        if self.pool_type == "cls":
-            pooled_output = last_hidden_state[:, 0, :]
-        elif self.pool_type == "avg":
-            pooled_output = torch.mean(last_hidden_state, dim=1)
-        else:
-            pooled_output = last_hidden_state
-
+        pooled_output = last_hidden_state[:, 0, :]
         pooled_output = self.post_layernorm(pooled_output)
 
         return (
             pooled_output,
             last_hidden_state,
         ) + encoder_outputs[1:]
-
 
 class PerceiverResampler(nn.Module):
     def __init__(self, config: DictConfig):

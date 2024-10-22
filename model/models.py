@@ -36,18 +36,20 @@ class PreTrainedModel(nn.Module):
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
             nn.init.normal_(module.weight, std=0.02)
+        elif isinstance(module, nn.Conv1d):
+            nn.init.normal_(module.weight, std=0.02)
         elif isinstance(module, EEGEmbeddings):
             if module.class_embedding is not None:
                 nn.init.normal_(
                     module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
                 )
-            nn.init.normal_(module.patch_embedding.weight, std=0.02)
         elif isinstance(module, EEGEmebeddingsWithMOE):
             for embedding in module.class_embedding:
-                nn.init.normal_(embedding)
-            nn.init.normal_(module.patch_embedding.weight, std=0.02)
+                nn.init.normal_(embedding, mean=0.0, std=module.embed_dim**-0.5)
 
-        elif isinstance(module, TransformerEncoderModel):
+        elif isinstance(module, TransformerEncoderModel) and isinstance(
+            module.projection, nn.Linear
+        ):
             nn.init.normal_(
                 module.projection.weight,
                 std=module.embed_dim**-0.5,
@@ -167,8 +169,14 @@ class TransformerEncoderModel(PreTrainedModel):
         self.encoder = get_class(config.encoder_name)(config)
         self.embed_dim = config.hidden_size
 
-        self.projection = nn.Linear(
-            in_features=self.embed_dim, out_features=config.projection_dim, bias=False
+        self.projection = (
+            nn.Linear(
+                in_features=self.embed_dim,
+                out_features=config.projection_dim,
+                bias=False,
+            )
+            if config.get("projection_dim", None) is not None
+            else nn.Identity()
         )
         self.apply(self._init_weights)
 
@@ -552,7 +560,7 @@ class VisionAdapterPipeline(AdapterPipeline):
         ), "Got condition inputs but the processor is None"
 
         assert (
-            self.condition_model is not None
+            self.vision_model is not None
         ), "Got condition inputs but the condition model is None"
 
         assert (
@@ -563,7 +571,7 @@ class VisionAdapterPipeline(AdapterPipeline):
 
         cond_tensors = cond_tensors.to(self.device, self.dtype)
 
-        cond_embeds = self.condition_model(cond_tensors)
+        cond_embeds = self.vision_model(cond_tensors).image_embeds
         uncond_embeds = torch.zeros_like(cond_embeds)
 
         cond_embeds = self.adapter_model(cond_embeds)

@@ -12,7 +12,7 @@ class DataModule(lightning.LightningDataModule):
         super().__init__()
         self.num_workers: int = config.get("num_workers", 4)
         self.dataset_class: Type = get_class(config.name)
-        self.batch_size:int = config.batch_size
+        self.batch_size: int = config.batch_size
 
         self.config = config
 

@@ -1,5 +1,5 @@
 trainer:
-  task: train_only
+  task: train_and_test_with_last
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
@@ -31,10 +31,9 @@ lightning:
 
   snr_gamma: 5.0
   num_images_per_prompt: 4
-  num_validation_images: 8
   num_inference_steps: 50
 
-  brain_model_path: /root/autodl-tmp/pretrained/brain-model
+  brain_model_path: /root/autodl-tmp/pretrained/brain-model-4
 
 model: null
 
@@ -45,10 +44,10 @@ dataset:
   resolution: 512
   batch_size: 4
   image_ext: JPEG
-  subject: 0
+  subject: 4
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
 
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
@@ -56,7 +55,7 @@ dataset:
 
   merge_train_and_val: true
 
-  drop_probability: 0.05
+  drop_probability: 0.01
 
 # constant learning rate
 optimizer:

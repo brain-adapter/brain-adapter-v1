@@ -149,13 +149,12 @@ class LitBrainKDModel(LitBaseModel):
 
     @override
     def forward(self, batch) -> Dict:
-        eeg_values, pixel_values, subjects = (
+        eeg_values, pixel_values = (
             batch["eeg_values"],
             batch["pixel_values"],
-            batch["subjects"],
         )
         batch_size = eeg_values.shape[0]
-        eeg_embeds: torch.Tensor = self.model(eeg_values, subjects=subjects)
+        eeg_embeds: torch.Tensor = self.model(eeg_values)
 
         # get teacher encoder embeds
         with torch.no_grad():
@@ -164,7 +163,9 @@ class LitBrainKDModel(LitBaseModel):
         # loss = nn.functional.cosine_embedding_loss(
         #     eeg_embeds, vision_embeds, torch.ones(batch_size, device=self.device)
         # ) + nn.functional.mse_loss(eeg_embeds, vision_embeds)
-        loss = nn.functional.mse_loss(eeg_embeds, vision_embeds)
+        loss = nn.functional.cosine_embedding_loss(
+            eeg_embeds, vision_embeds, torch.ones(batch_size, device=eeg_embeds.device)
+        )
 
         return {
             "loss": loss,
@@ -188,6 +189,107 @@ class LitBrainKDModel(LitBaseModel):
         batch_size = len(labels)
 
         self.log("val_loss", loss, prog_bar=True, on_epoch=True)
+
+        eeg_embeds = eeg_embeds / eeg_embeds.norm(p=2, dim=-1, keepdim=True)
+        vision_embeds = vision_embeds / vision_embeds.norm(p=2, dim=-1, keepdim=True)
+
+        clip_logits = torch.matmul(eeg_embeds, vision_embeds.t())
+        clip_logits = clip_logits.detach().cpu()
+
+        plt.figure(figsize=(16, 16))
+        plt.imshow(clip_logits, cmap="viridis")
+
+        plt.xlabel("vision-classes")
+        plt.xticks(range(batch_size), labels.detach().cpu().tolist())
+
+        plt.ylabel("eeg-classes")
+        plt.yticks(range(batch_size), labels.detach().cpu().tolist())
+
+        plt.colorbar()
+
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+
+        self.logger.experiment.add_image(
+            f"clip-logits-{batch_idx}",
+            plt.imread(buf),
+            self.global_step,
+            dataformats="HWC",
+        )
+        plt.close()
+
+        return loss
+
+
+class LitBrainTripletModel(LitBaseModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        pretrained_model_path = config.lightning.get("pretrained_model_path", None)
+        if pretrained_model_path is not None:
+            self.model = TransformerEncoderModel.from_pretrained(pretrained_model_path)
+        else:
+            self.model = TransformerEncoderModel(config=config.model)
+
+        self.classifier = nn.Linear(self.model.embed_dim, config.dataset.num_classes)
+        self.cross_entropy = nn.CrossEntropyLoss()
+
+        self.cls_ratio = config.lightning.get("cls_ratio", 0.5)
+
+        self.model.train()
+
+    @override
+    def forward(self, batch) -> Dict:
+        eeg_values, image_embeds, labels, subjects = (
+            batch["eeg_values"],
+            batch["image_embeds"],
+            batch["labels"],
+            batch["subjects"],
+        )
+        eeg_embeds: torch.Tensor = self.model(eeg_values, subjects=subjects - 1)
+
+        logits: torch.Tensor = self.classifier(eeg_embeds)
+
+        clip_loss = nn.functional.mse_loss(eeg_embeds, image_embeds)
+        cls_loss = self.cross_entropy(logits, labels)
+
+        loss = clip_loss + cls_loss * self.cls_ratio
+
+        pred = logits.argmax(dim=-1).detach()
+        acc = torch.sum(pred == labels).cpu().item() / len(labels)
+
+        return {
+            "acc": acc,
+            "cls_loss": cls_loss,
+            "clip_loss": clip_loss,
+            "loss": loss,
+            "eeg_embeds": eeg_embeds,
+            "vision_embeds": image_embeds,
+        }
+
+    @rank_zero_only
+    def validation_step(self, batch, batch_idx) -> Dict:
+        if not self.config.lightning.get("log_clip_logits", False):
+            return super().validation_step(batch, batch_idx)
+
+        model_outputs: Dict = self(batch)
+        loss, eeg_embeds, vision_embeds, labels, clip_loss, cls_loss, acc = (
+            model_outputs["loss"],
+            model_outputs["eeg_embeds"],
+            model_outputs["vision_embeds"],
+            batch["labels"],
+            model_outputs["clip_loss"],
+            model_outputs["cls_loss"],
+            model_outputs["acc"],
+        )
+
+        batch_size = len(labels)
+
+        self.log("val_loss", loss, prog_bar=True, on_epoch=True)
+        self.log("val_clip_loss", clip_loss, prog_bar=False, on_epoch=True)
+        self.log("val_cls_loss", cls_loss, prog_bar=False, on_epoch=True)
+        self.log("val_acc", acc, prog_bar=False, on_epoch=True)
 
         eeg_embeds = eeg_embeds / eeg_embeds.norm(p=2, dim=-1, keepdim=True)
         vision_embeds = vision_embeds / vision_embeds.norm(p=2, dim=-1, keepdim=True)
@@ -339,7 +441,7 @@ class LitDiffusionModel(LitBaseModel):
     def validation_step(self, batch, batch_idx):
         if not self.config.lightning.get("log_val_images", False):
             return None
-        
+
         seed = self.config.trainer.get("seed", None)
         num_inference_steps = self.config.lightning.get("num_inference_steps", 30)
 
@@ -513,7 +615,7 @@ class LitBrainAdapterModel(LitDiffusionModel):
         )
 
         with torch.no_grad():
-            encoder_outputs = self.brain_model(eeg_values, subjects=subjects)
+            encoder_outputs = self.brain_model(eeg_values, subjects=subjects - 1)
 
         cond_embeds = torch.stack(
             tuple(
@@ -551,7 +653,7 @@ class LitBrainAdapterModel(LitDiffusionModel):
         eeg_values, subjects = (batch["eeg_values"], batch["subjects"])
         # get condition embeds
         with torch.inference_mode():
-            cond_embeds = self.brain_model(eeg_values, subjects=subjects)
+            cond_embeds = self.brain_model(eeg_values, subjects=subjects - 1)
         uncond_embeds = torch.zeros_like(cond_embeds)
 
         with torch.inference_mode():
@@ -643,7 +745,7 @@ class LitMultiAdapterModel(LitDiffusionModel):
 
         with torch.no_grad():
             vision_embeds = self.vision_model(clip_pixel_values).image_embeds
-            brain_embeds = self.brain_model(eeg_values, subjects=subjects)
+            brain_embeds = self.brain_model(eeg_values)
 
         vision_embeds = torch.stack(
             tuple(
@@ -685,16 +787,15 @@ class LitMultiAdapterModel(LitDiffusionModel):
             dtype=self.dtype,
         )
 
-        clip_pixel_values, eeg_values, subjects = (
+        clip_pixel_values, eeg_values = (
             batch["clip_pixel_values"],
             batch["eeg_values"],
-            batch["subjects"],
         )
 
         # get condition embeds
         with torch.inference_mode():
             vision_embeds = self.vision_encoder(clip_pixel_values).image_embeds
-            brain_embeds = self.eeg_encoder(eeg_values, subjects=subjects)
+            brain_embeds = self.eeg_encoder(eeg_values)
 
         with torch.inference_mode():
             cond_embeds = self.model(vision_embeds, brain_embeds)
@@ -712,7 +813,7 @@ class LitMultiAdapterModel(LitDiffusionModel):
         )
 
         return images
-    
+
     @override
     @rank_zero_only
     def test_step(self, batch, batch_idx):

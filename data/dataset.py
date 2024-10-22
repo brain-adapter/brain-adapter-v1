@@ -1,9 +1,8 @@
 import os
 import random
-import json
 from typing import Dict, Optional, Union, List
 
-
+import numpy
 import torch
 import tarfile
 from torch.utils.data import Dataset
@@ -135,6 +134,79 @@ class EEGImageNetDataset(Dataset):
 
         if self.mode in ["val", "test"]:
             data["ground_truth"] = ground_truth.squeeze(dim=0)
+
+        return data
+
+
+class EEGImageNetFeaturesDataset(Dataset):
+    def __init__(self, mode: str, config: DictConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.mode = mode
+
+        loaded = torch.load(config.eeg_data_path)
+        dataset = loaded["dataset"]
+
+        self.image_features = torch.load(config.image_embeds_path)
+        self.images = loaded["images"]
+
+        # preprocess the raw data
+        if "stddevs" in loaded.keys() and "means" in loaded.keys():
+            stddevs = loaded["stddevs"]
+            means = loaded["means"]
+            for item in dataset:
+                # do z-score for the raw eeg data
+                item["eeg"] = (item["eeg"] - means) / stddevs
+
+        # filter the dataset by subject id
+        if config.subject != 0:
+            self.dataset = [
+                dataset[i]
+                for i in range(len(dataset))
+                if dataset[i]["subject"] == config.subject
+            ]
+        else:
+            self.dataset = dataset
+
+        # filter splitter
+        splitter: list = torch.load(config.splitter_path)["splits"][0][mode]
+        if (
+            config.get("merge_train_and_val", False) and mode == "train"
+        ):  # whether to merge the training and validation set
+            splitter.extend(torch.load(config.splitter_path)["splits"][0]["val"])
+
+        splitter = [i for i in splitter if i < len(self.dataset)]
+        self.splitter = [
+            i for i in splitter if 450 <= self.dataset[i]["eeg"].shape[-1] <= 600
+        ]
+
+        # processors for eeg and images
+
+        self.eeg_processor = EEGProcessor(
+            time_low=config.get("time_low", None),
+            time_high=config.get("time_high", None),
+        )
+
+    def __len__(self):
+        return len(self.splitter)
+
+    def __getitem__(self, index) -> Dict:
+        idx = self.splitter[index]
+        item: Dict = self.dataset[idx]
+
+        eeg_values = self.eeg_processor(item["eeg"], return_batches=False)
+        image_id = self.images[item["image"]]
+
+        image_dict = self.image_features[image_id]
+
+        image_embeds = image_dict["image_embeds"]
+
+        data = {
+            "eeg_values": eeg_values,
+            "subjects": item["subject"],
+            "labels": item["label"],
+            "image_embeds": image_embeds,
+        }
 
         return data
 
@@ -295,9 +367,7 @@ class ImageDataset(Dataset):
             else None
         )
 
-        self.cond_processor = CLIPImageProcessor.from_pretrained(
-            config.clip_model_path
-        )
+        self.cond_processor = CLIPImageProcessor.from_pretrained(config.clip_model_path)
 
         self.drop_probability: float = config.drop_probability
 
