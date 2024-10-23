@@ -39,10 +39,9 @@ class PreTrainedModel(nn.Module):
         elif isinstance(module, nn.Conv1d):
             nn.init.normal_(module.weight, std=0.02)
         elif isinstance(module, EEGEmbeddings):
-            if module.class_embedding is not None:
-                nn.init.normal_(
-                    module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
-                )
+            nn.init.normal_(
+                module.class_embedding, mean=0.0, std=module.embed_dim**-0.5
+            )
         elif isinstance(module, EEGEmebeddingsWithMOE):
             for embedding in module.class_embedding:
                 nn.init.normal_(embedding, mean=0.0, std=module.embed_dim**-0.5)
