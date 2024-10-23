@@ -233,7 +233,7 @@ class EEGImageNetDatasetForReconstruction(EEGImageNetDataset):
                 self.splitter, config.get("num_validation_images", 4)
             )
 
-        self.drop_probability: float = config.drop_probability
+        self.drop_probability: float = config.get("drop_probability", 0.05)
 
     def __getitem__(self, index) -> Dict:
         idx = self.splitter[index]

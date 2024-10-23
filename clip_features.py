@@ -7,7 +7,6 @@ from tqdm import tqdm
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from transformers.models.clip import CLIPVisionModelWithProjection, CLIPImageProcessor
 
@@ -145,7 +144,7 @@ if __name__ == "__main__":
     parser = ArgumentParser()
 
     parser.add_argument(
-        "--image_root",
+        "--image-root",
         default="/root/autodl-tmp/data/eeg-imagenet/images",
         type=str,
     )

@@ -27,11 +27,11 @@ lightning:
   name: model.lightnings.LitBrainModel
 
   pretrained_model_path: null
-  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336 # openai/clip-vit-l-14 336 version
 
-  log_clip_logits: true
+  log_clip_logits: true # log similarity matrix within a batch during validation loop
   
-  cls_ratio: 0.08
+  cls_ratio: 0.08 # ratio for cross entropy loss
   
 
 model:
@@ -43,7 +43,7 @@ model:
   num_samples: 440
   patch_size: 4
   hidden_size: 768
-  num_layers: 8
+  num_layers: 8 
   num_attention_heads: 12
   mlp_ratio: 1.0
   dropout: 0.5
@@ -51,18 +51,18 @@ model:
 
 
 dataset: 
-  name: data.dataset.EEGImageNetFeaturesDataset
+  name: data.dataset.EEGImageNetFeaturesDataset # Dataset with features to accelarate the distillation process
 
   num_workers: 2 # num_devices * 2
   subject: 0 # 0 means using data of all subjects
-  batch_size: 64
+  batch_size: 64 # better than 16
   num_classes: 40
 
   image_ext: JPEG
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  image_embeds_path: image_embeds.pth
+  image_embeds_path: image_embeds.pth # output of `clip_features.py`
 
   merge_train_and_val: true
 
@@ -70,7 +70,7 @@ dataset:
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 1.e-4
+    lr: 1.e-4 
     weight_decay: 0.05
 
 scheduler:

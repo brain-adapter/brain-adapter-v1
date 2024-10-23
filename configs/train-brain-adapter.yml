@@ -1,19 +1,19 @@
 trainer:
-  task: train_and_test_with_last
+  task: train_only
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
-  max_epochs: 2
+  max_epochs: 5
   num_devices: 1
 
   checkpoint:
     dirpath: /root/autodl-tmp/ckpts
     monitor: step
     filename: lit-{step}
-    save_top_k: 1
+    save_top_k: 5 # save all and conduct ablation studies
     mode: max
     every_n_epochs: 1
-    save_last: true
+    save_last: false
 
 # for Tensorboard logger
 logger:
@@ -26,14 +26,14 @@ logger:
 lightning:
   name: model.lightnings.LitBrainAdapterModel
   # employ pretrained vision adapter
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part1
+  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter/part1 # use part-1 that trained on 5,000,000 images
   diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
 
   snr_gamma: 5.0
   num_images_per_prompt: 4
   num_inference_steps: 50
 
-  brain_model_path: /root/autodl-tmp/pretrained/brain-model-4
+  brain_model_path: /root/autodl-tmp/pretrained/brain-model-moe
 
 model: null
 
@@ -44,10 +44,10 @@ dataset:
   resolution: 512
   batch_size: 4
   image_ext: JPEG
-  subject: 4
+  subject: 0 # MOE is trained on all subjects and there is no need to finetune on a single subject
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
 
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
@@ -55,7 +55,7 @@ dataset:
 
   merge_train_and_val: true
 
-  drop_probability: 0.01
+  drop_probability: 0.05 # for enhancing classifier-free guidance
 
 # constant learning rate
 optimizer:
