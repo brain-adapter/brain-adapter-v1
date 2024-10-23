@@ -2,7 +2,7 @@ trainer:
   task: train_and_test_with_best
   seed: 2024
   save_directory: /root/autodl-tmp/pretrained
-  check_val_every_n_epoch: &interval 2
+  check_val_every_n_epoch: &interval 1
   max_epochs: &max_epochs 30
   num_devices: 1
 
@@ -19,49 +19,50 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-model-all
+    name: brain-model-moe
     version: 5-95
     default_hp_metric: false
 
 lightning:
-  name: model.lightnings.LitBrainKDModel
+  name: model.lightnings.LitBrainModel
 
   pretrained_model_path: null
   clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
 
   log_clip_logits: true
-
+  
+  cls_ratio: 0.08
+  
 
 model:
   name: model.models.TransformerEncoderModel
-  encoder_name: model.modules.EEGTransformer
+  encoder_name: model.modules.EEGMOETransformer
 
   num_channels: 128
   num_subjects: 6
   num_samples: 440
   patch_size: 4
   hidden_size: 768
-  num_layers: 6
+  num_layers: 8
   num_attention_heads: 12
   mlp_ratio: 1.0
   dropout: 0.5
   act_fn: gelu
 
-  projection_dim: 768
 
 dataset: 
-  name: data.dataset.EEGImageNetDataset
+  name: data.dataset.EEGImageNetFeaturesDataset
 
   num_workers: 2 # num_devices * 2
   subject: 0 # 0 means using data of all subjects
-  batch_size: 16
+  batch_size: 64
+  num_classes: 40
 
   image_ext: JPEG
 
-  image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  clip_model_path: *clip_model_path
+  image_embeds_path: image_embeds.pth
 
   merge_train_and_val: true
 
@@ -69,7 +70,7 @@ dataset:
 optimizer:
   name: torch.optim.AdamW
   params:
-    lr: 2.e-4
+    lr: 1.e-4
     weight_decay: 0.05
 
 scheduler:

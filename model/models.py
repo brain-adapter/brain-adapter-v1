@@ -662,7 +662,7 @@ class BrainAdapterPipeline(AdapterPipeline):
 
         cond_tensors = cond_tensors.to(self.device, self.dtype)
 
-        cond_embeds = self.condition_model(cond_tensors, subjects=subjects)
+        cond_embeds = self.condition_model(cond_tensors, subjects=subjects - 1)
         uncond_embeds = torch.zeros_like(cond_embeds)
 
         cond_embeds = self.adapter_model(cond_embeds)
