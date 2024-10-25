@@ -216,7 +216,9 @@ class LitBrainModel(LitBaseModel):
         plt.colorbar()
 
         buf = io.BytesIO()
-        plt.savefig(buf, format="png")
+        # remove space
+        plt.tight_layout(pad=0.0) 
+        plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.0)
         buf.seek(0)
 
         self.logger.experiment.add_image(

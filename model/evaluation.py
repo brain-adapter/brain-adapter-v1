@@ -5,6 +5,7 @@ import PIL
 import numpy as np
 import torchmetrics
 from torch import nn
+from skimage.metrics import structural_similarity
 from torchvision import transforms
 
 
@@ -84,6 +85,10 @@ def resize_images(
 
 @torch.inference_mode()
 def n_way_top_k_acc(pred:torch.Tensor, class_id:int, n_way:int, num_trials=40, top_k=1):
+    """
+    Copied from Implementation of DreamDiffusion: 
+    https://github.com/bbaaii/DreamDiffusion/blob/main/code/eval_metrics.py
+    """
     pick_range = [i for i in np.arange(len(pred)) if i != class_id]
     acc_list = []
     for _ in range(num_trials):
@@ -100,6 +105,9 @@ def n_way_top_k_acc(pred:torch.Tensor, class_id:int, n_way:int, num_trials=40, t
 def clip_similarity(clip_embeds_gen: torch.Tensor, clip_embeds_gt: torch.Tensor):
     return nn.functional.cosine_similarity(clip_embeds_gen, clip_embeds_gt, dim=-1).mean()
 
+@torch.inference_mode()
+def ssim():
+    pass
 
 EVALUATION_FUNCTIONS = {
     "n_way_top_k_acc": n_way_top_k_acc,
