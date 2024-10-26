@@ -502,7 +502,7 @@ class LitBrainAdapterModel(LitDiffusionModel):
         # load from pretrained model, can be vision adapter or brain adapter
         if config.lightning.get("pretrained_model_path", None) is not None:
             self.model: BrainAdapterModel = BrainAdapterModel.from_pretrained(
-                config.lightning.pretrained_model_path
+                config.lightning.pretrained_model_path, config.get("model", None)
             )
             self.model.bind_unet(self.unet)
         # load from unet
