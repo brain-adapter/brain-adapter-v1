@@ -80,16 +80,23 @@ class PreTrainedModel(nn.Module):
 
     @staticmethod
     def load_config(pretrained_model_path: str, config: Optional[DictConfig] = None):
+        conf_path = os.path.join(pretrained_model_path, "config.yml")
+        if not os.path.exists(conf_path):
+            raise FileNotFoundError(
+                f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
+            )
+        origin_config = OmegaConf.load(conf_path)
+
+        # no new config to overwrite
         if not isinstance(config, DictConfig):
-            conf_path = os.path.join(pretrained_model_path, "config.yml")
-            if not os.path.exists(conf_path):
-                raise FileNotFoundError(
-                    f"Cannot find the config file in the model path: [{pretrained_model_path}]!"
-                )
-            config = OmegaConf.load(conf_path)
+            config = origin_config
         else:
-            # overwrite
             config = copy.deepcopy(config)
+            # merge config
+            for key in config.keys():
+                OmegaConf.update(origin_config, key, config.get(key))
+            
+            config = origin_config
 
         return config
 
