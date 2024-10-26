@@ -346,6 +346,7 @@ class EEGMOETransformer(nn.Module):
             last_hidden_state,
         ) + encoder_outputs[1:]
 
+
 class PerceiverResampler(nn.Module):
     def __init__(self, config: DictConfig):
         super().__init__()

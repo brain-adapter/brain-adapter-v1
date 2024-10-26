@@ -412,7 +412,7 @@ class LitVisionAdapterModel(LitDiffusionModel):
         # load from pretrained model
         if config.lightning.get("pretrained_model_path", None) is not None:
             self.model: VisionAdapterModel = VisionAdapterModel.from_pretrained(
-                config.lightning.pretrained_model_path
+                config.lightning.pretrained_model_path, config.get("model", None)
             )
             self.model.bind_unet(self.unet)
         # load from unet

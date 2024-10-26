@@ -103,11 +103,7 @@ def main(config: DictConfig):
     # save model
     save_directory = config.trainer.get("save_directory", None)
 
-    if (
-        ckpt_callback is not None
-        and task != Task.TEST_ONLY
-        and trainer.is_global_zero
-    ):
+    if ckpt_callback is not None and task != Task.TEST_ONLY and trainer.is_global_zero:
         ckpt_paths = ckpt_callback.best_k_models.keys()
 
         for path in ckpt_paths:
@@ -136,8 +132,6 @@ def main(config: DictConfig):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument(
-        "--config", default="configs/train-brain-model.yml", type=str
-    )
+    parser.add_argument("--config", default="configs/train-brain-model.yml", type=str)
     config = OmegaConf.load(parser.parse_args().config)
     main(config)
