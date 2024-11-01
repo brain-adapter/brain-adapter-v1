@@ -1,0 +1,48 @@
+trainer:
+  task: test_only
+  seed: 2024
+  num_devices: 1
+
+# for Tensorboard logger
+logger:
+    save_dir: /root/tf-logs
+    sub_dir: logs
+    name: test-brain-adapter
+    version: 5-95-1 # 5-95-i, i in [1, 2, 3, 4, 5, 6]
+    default_hp_metric: false
+
+lightning:
+  name: model.lightnings.LitBrainIPAdapterModel
+  pretrained_model_path: /root/autodl-tmp/pretrained/brain-adapter-moe # pretrained adapter model path
+  diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
+
+  snr_gamma: 5.0
+  num_images_per_prompt: 4
+  num_inference_steps: 50
+
+  brain_model_path: /root/autodl-tmp/pretrained/brain-model-moe # brain encoder path
+
+model: null
+
+
+dataset: 
+  name: data.dataset.EEGImageNetDatasetForReconstructionWithText
+  num_workers: 1 # num_devices * 4
+  resolution: 512
+  batch_size: 4
+  image_ext: JPEG
+  subject: 1 # 1, 2, 3, 4, 5, 6
+
+  eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth # splitter for a single subject
+  image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
+
+  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  diffusion_model_path: *diffusion_model_path
+
+# constant learning rate
+optimizer:
+  name: torch.optim.AdamW
+  params:
+    lr: 2.e-5
+    weight_decay: 0.01

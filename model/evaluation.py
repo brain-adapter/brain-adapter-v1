@@ -5,7 +5,6 @@ import PIL
 import numpy as np
 import torchmetrics
 from torch import nn
-from skimage.metrics import structural_similarity
 from torchvision import transforms
 
 

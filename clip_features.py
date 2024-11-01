@@ -1,6 +1,6 @@
 import os
 from typing import List, Dict
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from pathlib2 import Path
 from tqdm import tqdm
 
@@ -39,7 +39,7 @@ class ImageDataset(Dataset):
         return image_id, pixel_values
 
 
-def main(config):
+def main(config: Namespace):
     model = CLIPVisionModelWithProjection.from_pretrained(config.clip_model_path)
     dataset = ImageDataset(config.clip_model_path, config.image_root, config.image_ext)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
@@ -53,8 +53,6 @@ def main(config):
             else torch.device("cpu")
         )
     )
-
-    model.to(gpu)
 
     result: Dict[str, Dict] = {}
 
@@ -111,8 +109,7 @@ def main(config):
         # top5 lowest
         values, indices = torch.topk(torch.stack(dist_list), k=5, largest=False)
         item["dist"] = {dist_ids[index]: value for index, value in zip(indices, values)}
-        item['top1_dist'] = dist_ids[indices[0]]
-
+        item["top1_dist"] = dist_ids[indices[0]]
 
         sim_map = item["sim"]
 
@@ -121,7 +118,7 @@ def main(config):
         # top5 highest
         values, indices = torch.topk(torch.stack(sim_list), k=5)
         item["sim"] = {sim_ids[index]: value for index, value in zip(indices, values)}
-        item['top1_sim'] = sim_ids[indices[0]]
+        item["top1_sim"] = sim_ids[indices[0]]
 
     torch.save(result, "image_embeds.pth")
 

@@ -2,13 +2,12 @@ import os
 import random
 from typing import Dict, Optional, Union, List
 
-import numpy
 import torch
 import tarfile
 from torch.utils.data import Dataset
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image, TarIO
-from transformers import CLIPImageProcessor
+from transformers import CLIPImageProcessor, CLIPTokenizer
 from torchvision import transforms
 from torchvision.transforms._presets import ImageClassification, InterpolationMode
 
@@ -266,6 +265,34 @@ class EEGImageNetDatasetForReconstruction(EEGImageNetDataset):
         if self.mode == "val" or self.mode == "test":
             data["ground_truth"] = ground_truth.squeeze(dim=0)
             data["image_indexes"] = self.images[item["image"]]
+
+        return data
+
+
+class EEGImageNetDatasetForReconstructionWithText(EEGImageNetDatasetForReconstruction):
+    def __init__(self, mode: str, config: DictConfig) -> None:
+        super().__init__(mode, config)
+
+        self.text_processor = CLIPTokenizer.from_pretrained(
+            config.diffusion_model_path, subfolder="tokenizer"
+        )
+
+    def __getitem__(self, index) -> Dict:
+        data = super().__getitem__(index)
+
+        if self.mode == "train":
+            drops = data["drops"]
+            data["text_input_ids"] = self.text_processor(
+                (
+                    ""
+                    if drops
+                    else "best quality, high quality"
+                ),
+                max_length=self.text_processor.model_max_length,
+                padding="max_length",
+                truncation=True,
+                return_tensors="pt",
+            ).input_ids.squeeze(dim=0)
 
         return data
 

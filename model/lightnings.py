@@ -17,19 +17,21 @@ from diffusers import (
     DDPMScheduler,
     StableDiffusionPipeline,
 )
-from transformers import CLIPVisionModelWithProjection
+from transformers import CLIPVisionModelWithProjection, CLIPTextModel
 
 
 from model.activations import compute_snr, get_class
 from model.models import (
     TransformerEncoderModel,
     VisionAdapterModel,
+    BrainIPAdapterModel,
     BrainAdapterModel,
     MultiAdapterModel,
     PreTrainedModel,
     PytorchVisionModel,
     VisionAdapterPipeline,
     BrainAdapterPipeline,
+    BrainIPAdapterPipeline,
     MultiAdapterPipeline,
 )
 from model.evaluation import get_evaluation
@@ -217,7 +219,7 @@ class LitBrainModel(LitBaseModel):
 
         buf = io.BytesIO()
         # remove space
-        plt.tight_layout(pad=0.0) 
+        plt.tight_layout(pad=0.0)
         plt.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.0)
         buf.seek(0)
 
@@ -260,8 +262,8 @@ class LitBrainClsModel(LitBaseModel):
 class LitDiffusionModel(LitBaseModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.diffusion_model_path = config.lightning.diffusion_model_path
-        self.snr_gamma = config.lightning.get("snr_gamma", None)
+        self.diffusion_model_path: str = config.lightning.diffusion_model_path
+        self.snr_gamma: float = config.lightning.get("snr_gamma", None)
 
         self.unet: UNet2DConditionModel = UNet2DConditionModel.from_pretrained(
             self.diffusion_model_path, subfolder="unet"
@@ -609,6 +611,129 @@ class LitBrainAdapterModel(LitDiffusionModel):
                         save_directory, f"{image_indexes[i]}-{subjects[i]}-{j}.png"
                     )
                     image.save(save_path)
+
+
+class LitBrainIPAdapterModel(LitBrainAdapterModel):
+    def __init__(self, config: DictConfig):
+        super().__init__(config)
+
+        self.brain_model:TransformerEncoderModel = TransformerEncoderModel.from_pretrained(
+            config.lightning.brain_model_path
+        )
+
+        self.text_model: CLIPTextModel = CLIPTextModel.from_pretrained(
+            self.diffusion_model_path, subfolder="text_encoder"
+        )
+
+        # load from pretrained model, can be vision adapter or brain adapter
+        if config.lightning.get("pretrained_model_path", None) is not None:
+            self.model: BrainIPAdapterModel = BrainIPAdapterModel.from_pretrained(
+                config.lightning.pretrained_model_path, config.get("model", None)
+            )
+            self.model.bind_unet(self.unet)
+        # load from ip-adapter
+        else:
+            self.model: BrainIPAdapterModel = BrainIPAdapterModel.from_ip_adapter(
+                config.lightning.ip_adapter_model_path, config.model
+            )
+            self.model.bind_unet(self.unet)
+
+        self.brain_model.requires_grad_(False)
+        self.text_model.requires_grad_(False)
+        self.model.train()
+
+    @override
+    def forward(self, batch) -> Dict:
+        pixel_values, eeg_values, subjects, drops = (
+            batch["pixel_values"],
+            batch["eeg_values"],
+            batch["subjects"],
+            batch["drops"],
+        )
+
+        with torch.no_grad():
+            encoder_outputs = self.brain_model(eeg_values, subjects=subjects - 1)
+
+        brain_embeds = torch.stack(
+            tuple(
+                torch.where(drop, torch.zeros_like(encoder_output), encoder_output)
+                for encoder_output, drop in zip(encoder_outputs, drops)
+            ),
+            dim=0,
+        )
+        brain_embeds: torch.FloatTensor = self.model(brain_embeds)
+
+        with torch.no_grad():
+            text_embeds = self.text_model(batch["text_input_ids"])[0]
+
+        # no need to drop text prompt, since the prompt are fixed
+        cond_embeds = torch.cat([text_embeds, brain_embeds], dim=1)
+
+        loss = self.forward_loss(pixel_values, cond_embeds)
+
+        return {"loss": loss}
+
+    @override
+    def generate(
+        self,
+        batch,
+        seed: Optional[int] = None,
+        num_inference_steps: Optional[int] = None,
+        num_images_per_prompt: Optional[int] = None,
+        **kwargs,
+    ):
+        pipeline = BrainIPAdapterPipeline(
+            StableDiffusionPipeline.from_pretrained(
+                self.diffusion_model_path,
+                text_encoder=self.text_model,
+                unet=self.unet,
+                vae=self.vae,
+                safety_checker=None,
+            ),
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        eeg_values, subjects = (
+            batch["eeg_values"],
+            batch["subjects"],
+        )
+        # get condition embeds
+        with torch.inference_mode():
+            brain_embeds = self.brain_model(eeg_values, subjects=subjects - 1)
+        uncond_brain_embeds = torch.zeros_like(brain_embeds)
+
+        with torch.inference_mode():
+            brain_embeds = self.model(brain_embeds)
+            uncond_brain_embeds = self.model(uncond_brain_embeds)
+
+        prompt = ["best quality, high quality"] * len(eeg_values)
+        negative_prompt = [
+            "monochrome, lowres, bad anatomy, worst quality, low quality"
+        ] * len(eeg_values)
+
+        with torch.inference_mode():
+            text_embeds, uncond_text_embeds = pipeline.pipeline.encode_prompt(
+                prompt,
+                device=self.device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=True,
+                negative_prompt=negative_prompt,
+            )
+
+        cond_embeds = torch.cat([text_embeds, brain_embeds], dim=1)
+        uncond_embeds = torch.cat([uncond_text_embeds, uncond_brain_embeds], dim=1)
+
+        images = pipeline(
+            cond_embeds=cond_embeds,
+            uncond_embeds=uncond_embeds,
+            seed=seed,
+            num_inference_steps=num_inference_steps,
+            num_images_per_prompt=num_images_per_prompt,
+            **kwargs,
+        )
+
+        return images
 
 
 class LitMultiAdapterModel(LitDiffusionModel):

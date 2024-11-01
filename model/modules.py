@@ -691,7 +691,13 @@ class VisionAttnProcessor(nn.Module):
             The number of channels in the `encoder_hidden_states`.
     """
 
-    def __init__(self, hidden_size: int, cross_attention_dim: int):
+    def __init__(
+        self,
+        hidden_size: int,
+        cross_attention_dim: int,
+        num_tokens: Optional[int] = None,
+        scale: Optional[float] = None,
+    ):
         super().__init__()
 
         if not hasattr(nn.functional, "scaled_dot_product_attention"):
@@ -780,7 +786,8 @@ class MixedAttnProcessor(nn.Module):
         self,
         hidden_size: int,
         cross_attention_dim: int,
-        num_vision_tokens: int = 4,
+        num_tokens: Optional[int] = 4,
+        scale: Optional[float] = 0.0,
     ):
         super().__init__()
 
@@ -791,7 +798,7 @@ class MixedAttnProcessor(nn.Module):
 
         self.hidden_size = hidden_size
         self.cross_attention_dim = cross_attention_dim
-        self.num_vision_tokens = num_vision_tokens
+        self.num_vision_tokens = num_tokens
 
         self.to_key_eeg = nn.Linear(cross_attention_dim, hidden_size, bias=False)
         self.to_value_eeg = nn.Linear(cross_attention_dim, hidden_size, bias=False)
@@ -799,7 +806,7 @@ class MixedAttnProcessor(nn.Module):
         self.to_key_vision = nn.Linear(cross_attention_dim, hidden_size, bias=False)
         self.to_value_vision = nn.Linear(cross_attention_dim, hidden_size, bias=False)
 
-        self.eeg_scale = nn.Parameter(torch.tensor(0.0))
+        self.eeg_scale = nn.Parameter(torch.tensor(scale))
 
     def __call__(
         self,

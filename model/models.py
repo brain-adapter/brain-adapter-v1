@@ -17,6 +17,7 @@ from PIL import Image
 from model.activations import get_class, get_device, get_generator
 from model.modules import (
     AttnProcessor,
+    IPAttnProcessor,
     MixedAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,
@@ -79,7 +80,10 @@ class PreTrainedModel(nn.Module):
         torch.save(model.state_dict(), model_path)
 
     @staticmethod
-    def load_config(pretrained_model_path: str, config: Optional[DictConfig] = None):
+    def load_config(
+        pretrained_model_path: Optional[str] = None,
+        config: Optional[DictConfig] = None,
+    ):
         conf_path = os.path.join(pretrained_model_path, "config.yml")
         if not os.path.exists(conf_path):
             raise FileNotFoundError(
@@ -95,7 +99,7 @@ class PreTrainedModel(nn.Module):
             # merge config
             for key in config.keys():
                 OmegaConf.update(origin_config, key, config.get(key))
-            
+
             config = origin_config
 
         return config
@@ -237,6 +241,9 @@ class AdapterModel(PreTrainedModel):
         super().__init__(config)
         # init this model using method `from_unet`
         self.adapter_modules = None
+        # default
+        self.processor_name: str = "model.modules.VisionAttnProcessor"
+        self.num_tokens: int = config.projection_config.get("num_tokens", 4)
 
     def _format_weights(self, to_key: torch.Tensor, to_value: torch.Tensor):
         return {
@@ -248,7 +255,6 @@ class AdapterModel(PreTrainedModel):
         self,
         unet: UNet2DConditionModel,
         load_weights: bool = False,
-        processor_name: str = "model.modules.VisionAttnProcessor",
     ) -> Dict[str, nn.Module]:
         """
         Get attention processor dict of the given unet and replace processors
@@ -272,8 +278,8 @@ class AdapterModel(PreTrainedModel):
             if cross_attention_dim is None:
                 attn_procs[name] = AttnProcessor()
             else:
-                processor: nn.Module = get_class(processor_name)(
-                    hidden_size, cross_attention_dim
+                processor: nn.Module = get_class(self.processor_name)(
+                    hidden_size, cross_attention_dim, self.num_tokens
                 )
                 if load_weights:
                     unet_sd = unet.state_dict()
@@ -357,15 +363,43 @@ class VisionAdapterModel(AdapterModel):
         return self.projection(cond_embeds)
 
 
-class BrainAdapterModel(AdapterModel):
+class BrainAdapterModel(VisionAdapterModel):
+    pass
+
+
+class BrainIPAdapterModel(VisionAdapterModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
-        self.projection = AdapterProjection(config.projection_config)
 
-        self.apply(self._init_weights)
+        self.processor_name = "model.modules.IPAttnProcessor"
 
-    def forward(self, cond_embeds: torch.Tensor) -> torch.Tensor:
-        return self.projection(cond_embeds)
+    @override
+    def _format_weights(self, to_key: torch.Tensor, to_value: torch.Tensor):
+        return {
+            "to_k_ip.weight": copy.deepcopy(to_key),
+            "to_v_ip.weight": copy.deepcopy(to_value),
+        }
+
+    @classmethod
+    def from_ip_adapter(
+        cls, ip_adapter_model_path: str, config: Optional[DictConfig] = None
+    ) -> AdapterModel:
+        unet = UNet2DConditionModel.from_pretrained(
+            config.diffusion_model_path, subfolder="unet"
+        )
+
+        model: BrainIPAdapterModel = cls.from_unet(unet, config, bind_unet=False)
+        weights = torch.load(ip_adapter_model_path, map_location="cpu")
+
+        projection_weights = weights["image_proj"]
+        adapter_modules_weights = weights["ip_adapter"]
+
+        model.projection.load_state_dict(projection_weights)
+        model.adapter_modules.load_state_dict(adapter_modules_weights)
+
+        model.eval()
+
+        return model
 
 
 class MultiAdapterModel(AdapterModel):
@@ -632,7 +666,7 @@ class BrainAdapterPipeline(AdapterPipeline):
         device: Union[str, torch.device, None] = None,
         dtype: Optional[torch.dtype] = None,
         brain_model: Optional[TransformerEncoderModel] = None,
-        adapter_model: Optional[BrainAdapterModel] = None,
+        adapter_model: Optional[AdapterModel] = None,
         processor: Optional[EEGProcessor] = None,
     ):
         super().__init__(stable_diffusion_pipeline, device, dtype)
@@ -710,6 +744,69 @@ class BrainAdapterPipeline(AdapterPipeline):
             num_inference_steps,
             **kwargs,
         )
+
+
+class BrainIPAdapterPipeline(BrainAdapterPipeline):
+
+    @override
+    @torch.inference_mode()
+    def get_encoder_embeds(
+        self,
+        eeg_values: torch.FloatTensor,
+        subjects: torch.Tensor,
+        prompt: Union[str, List[str]],
+        negative_prompt: Union[str, List[str]],
+    ) -> Tuple[torch.Tensor]:
+        assert (
+            eeg_values is not None and subjects is not None
+        ), "condition input cannot be None"
+
+        assert (
+            self.processor is not None
+        ), "Got condition inputs but the processor is None"
+
+        assert (
+            self.brain_model is not None
+        ), "Got condition inputs but the brain model is None"
+
+        assert (
+            self.adapter_model is not None
+        ), "Got condition inputs but the adapter model is None"
+
+        cond_tensors = self.processor(eeg_values)
+
+        cond_tensors = cond_tensors.to(self.device, self.dtype)
+
+        brain_embeds = self.condition_model(cond_tensors, subjects=subjects - 1)
+        uncond_brain_embeds = torch.zeros_like(brain_embeds)
+
+        brain_embeds = self.adapter_model(brain_embeds)
+        uncond_brain_embeds = self.adapter_model(uncond_brain_embeds)
+
+        if prompt is None:
+            prompt = "best quality, high quality"
+        if negative_prompt is None:
+            negative_prompt = (
+                "monochrome, lowres, bad anatomy, worst quality, low quality"
+            )
+
+        if not isinstance(prompt, List):
+            prompt = [prompt] * brain_embeds.shape[0]
+        if not isinstance(negative_prompt, List):
+            negative_prompt = [negative_prompt] * brain_embeds.shape[0]
+
+        text_embeds, uncond_text_embeds = self.pipeline.encode_prompt(
+            prompt,
+            device=self.device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=True,
+            negative_prompt=negative_prompt,
+        )
+
+        cond_embeds = torch.cat([text_embeds, brain_embeds], dim=1)
+        uncond_embeds = torch.cat([uncond_text_embeds, uncond_brain_embeds], dim=1)
+
+        return cond_embeds, uncond_embeds
 
 
 class MultiAdapterPipeline(AdapterPipeline):
