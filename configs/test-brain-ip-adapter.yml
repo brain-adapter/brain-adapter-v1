@@ -1,7 +1,6 @@
 trainer:
-  task: test_only
   seed: 2024
-  num_devices: 1
+  resume_ckpt_path: null
 
 # for Tensorboard logger
 logger:
@@ -40,9 +39,3 @@ dataset:
   clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
   diffusion_model_path: *diffusion_model_path
 
-# constant learning rate
-optimizer:
-  name: torch.optim.AdamW
-  params:
-    lr: 2.e-5
-    weight_decay: 0.01

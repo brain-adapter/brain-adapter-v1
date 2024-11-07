@@ -53,6 +53,8 @@ def main(config: Namespace):
             else torch.device("cpu")
         )
     )
+    model.eval()
+    model.to(gpu)
 
     result: Dict[str, Dict] = {}
 

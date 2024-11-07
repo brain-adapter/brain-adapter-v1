@@ -1,0 +1,21 @@
+aesthetic_score:
+  image_directory: &image_directory /root
+  image_ext: &image_ext png
+  batch_size: 32
+
+nway_topk_accuracy:
+  ref_image_directory: &ref_image_directory /root/autodl-tmp/data/eeg-imagenet/images
+  gen_image_directory: *image_directory
+  image_ext: *image_ext
+  ref_image_ext: &ref_image_ext JPEG
+  n_way: 50
+  top_k: 1
+  num_trials: 40
+
+clip_similarity:
+  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-b-32
+  ref_image_directory: *ref_image_directory
+  gen_image_directory: *image_directory
+  image_ext: *image_ext
+  ref_image_ext: *ref_image_ext
+  batch_size: 32

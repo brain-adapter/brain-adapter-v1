@@ -11,13 +11,11 @@ from transformers import (
     CLIPImageProcessor,
     CLIPVisionModelWithProjection,
 )
-from torchvision.models import VisionTransformer
 from PIL import Image
 
 from model.activations import get_class, get_device, get_generator
 from model.modules import (
     AttnProcessor,
-    IPAttnProcessor,
     MixedAttnProcessor,
     AdapterProjection,
     EEGEmbeddings,
@@ -204,36 +202,6 @@ class TransformerEncoderModel(PreTrainedModel):
         attn_maps = encoder_outputs[2]
 
         return attn_maps
-
-
-class PytorchVisionModel(PreTrainedModel):
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-        self.vision_model = VisionTransformer(**config)
-
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        return self.vision_model(pixel_values)
-
-    @override
-    def save_pretrained(self, save_directory: str):
-        raise ValueError("Cannot save an external pretrained model!")
-
-    @classmethod
-    def from_pretrained(
-        cls, pretrained_model_path: str, config: Optional[DictConfig] = None
-    ):
-        config = cls.load_config(pretrained_model_path, config)
-
-        model = cls(config)
-
-        weights_path = os.path.join(pretrained_model_path, "pytorch_model.pth")
-        weights = torch.load(weights_path)
-
-        model.vision_model.load_state_dict(weights)
-
-        # Set model in evaluation mode to deactivate DropOut modules by default
-        model.eval()
-        return model
 
 
 class AdapterModel(PreTrainedModel):

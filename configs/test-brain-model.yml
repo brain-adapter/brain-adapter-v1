@@ -1,0 +1,28 @@
+trainer:
+  seed: 2024
+  resume_ckpt_path: /root/autodl-tmp/ckpts/xxx.ckpt
+
+# for Tensorboard logger
+logger:
+    save_dir: /root/tf-logs
+    sub_dir: logs
+    name: brain-model-moe
+    version: 5-95-test
+    default_hp_metric: false
+
+lightning:
+  name: model.lightnings.LitBrainModel
+
+dataset: 
+  name: data.dataset.EEGImageNetFeaturesDataset # Dataset with features to accelarate the distillation process
+
+  num_workers: 2 # num_devices * 2
+  subject: 0 # 0 means using data of all subjects
+  batch_size: 64 # better than 16
+  num_classes: 40
+
+  image_ext: JPEG
+
+  eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
+  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
+  image_embeds_path: image_embeds.pth # output of `clip_features.py`

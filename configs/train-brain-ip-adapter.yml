@@ -1,7 +1,5 @@
 trainer:
-  task: train_only
   seed: 2024
-  save_directory: /root/autodl-tmp/pretrained
   check_val_every_n_epoch: 1
   max_epochs: 5
   num_devices: 1
@@ -14,13 +12,15 @@ trainer:
     mode: max
     every_n_epochs: 1
     save_last: false
+  
+  resume_ckpt_path: null
 
 # for Tensorboard logger
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
     name: brain-ip-adapter
-    version: 5-95
+    version: 5-95-train
     default_hp_metric: false
 
 lightning:

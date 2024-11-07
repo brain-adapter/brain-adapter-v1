@@ -1,7 +1,5 @@
 trainer:
-  task: train_only
   seed: 2024
-  save_directory: /root/autodl-tmp/pretrained
   val_check_interval: &interval 900
   max_epochs: 10
   num_devices: 4
@@ -14,6 +12,8 @@ trainer:
     mode: max
     every_n_train_steps: *interval
     save_last: false
+  
+  resume_ckpt_path: null
 
 # for Tensorboard logger
 logger:

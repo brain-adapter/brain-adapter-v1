@@ -1,6 +1,6 @@
 import os
 import io
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional, List
 from typing_extensions import override
 
 import torch
@@ -9,7 +9,7 @@ import lightning
 import matplotlib.pyplot as plt
 from lightning.pytorch.utilities import rank_zero_only
 from PIL import Image
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch import nn
 from diffusers import (
     UNet2DConditionModel,
@@ -28,13 +28,11 @@ from model.models import (
     BrainAdapterModel,
     MultiAdapterModel,
     PreTrainedModel,
-    PytorchVisionModel,
     VisionAdapterPipeline,
     BrainAdapterPipeline,
     BrainIPAdapterPipeline,
     MultiAdapterPipeline,
 )
-from model.evaluation import get_evaluation
 
 
 class LitBaseModel(lightning.LightningModule):
@@ -607,6 +605,7 @@ class LitBrainAdapterModel(LitDiffusionModel):
             for i in range(batch_size):
                 for j in range(num_images_per_prompt):
                     image: Image = images[i * num_images_per_prompt + j]
+                    # Format:  {imageNet id} - {subject id} - {sample id} - {.png}
                     save_path = os.path.join(
                         save_directory, f"{image_indexes[i]}-{subjects[i]}-{j}.png"
                     )
@@ -617,8 +616,8 @@ class LitBrainIPAdapterModel(LitBrainAdapterModel):
     def __init__(self, config: DictConfig):
         super().__init__(config)
 
-        self.brain_model:TransformerEncoderModel = TransformerEncoderModel.from_pretrained(
-            config.lightning.brain_model_path
+        self.brain_model: TransformerEncoderModel = (
+            TransformerEncoderModel.from_pretrained(config.lightning.brain_model_path)
         )
 
         self.text_model: CLIPTextModel = CLIPTextModel.from_pretrained(
@@ -878,53 +877,3 @@ class LitMultiAdapterModel(LitDiffusionModel):
                     )
                     image.save(save_path)
 
-
-class LitEvaluationModel(LitBaseModel):
-    def __init__(self, config: DictConfig):
-        super().__init__(config)
-
-        self.model: Union[PytorchVisionModel, CLIPVisionModelWithProjection] = (
-            get_class(config.lightning.evaluation_model.name).from_pretrained(
-                config.lightning.evaluation_model.pretrained_model_path
-            )
-        )
-
-        self.task: str = config.lightning.task.name
-        self.task_params: Dict = OmegaConf.to_object(config.lightning.task.params)
-
-    def forward(self, batch):
-        gen_pixel_values, gt_pixel_values = (
-            batch["gen_pixel_values"],
-            batch["gt_pixel_values"],
-        )
-
-        func = get_evaluation(self.task)
-
-        if self.task == "n_way_top_k_acc":
-            batch_size: int = gen_pixel_values.shape[0]
-            assert batch_size == 1, "Support batch_size 1 ONLY!"
-
-            gt_class_id = (
-                self.model(gt_pixel_values).squeeze(0).softmax(0).argmax().item()
-            )
-            pred_out = self.model(gen_pixel_values).squeeze(0).softmax(0).detach()
-
-            result = torch.tensor(func(pred_out, gt_class_id, **self.task_params))
-        elif self.task == "clip_similarity":
-            clip_embeds_gt = self.model(gt_pixel_values)
-            clip_embeds_gen = self.model(gen_pixel_values)
-
-            result = func(clip_embeds_gen, clip_embeds_gt)
-
-        return result
-
-    def training_step(self, batch, batch_idx) -> Dict:
-        raise RuntimeError("This model can only be involved in evaluation tasks")
-
-    def validation_step(self, batch, batch_idx) -> Dict:
-        raise RuntimeError("This model can only be involved in evaluation tasks")
-
-    def test_step(self, batch, batch_idx) -> Dict:
-        model_outputs = self(batch)
-
-        self.log(self.task, model_outputs, prog_bar=True)

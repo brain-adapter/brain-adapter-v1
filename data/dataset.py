@@ -3,15 +3,36 @@ import random
 from typing import Dict, Optional, Union, List
 
 import torch
-import tarfile
 from torch.utils.data import Dataset
-from omegaconf import DictConfig, OmegaConf
-from PIL import Image, TarIO
+from omegaconf import DictConfig
+from PIL import Image
 from transformers import CLIPImageProcessor, CLIPTokenizer
 from torchvision import transforms
-from torchvision.transforms._presets import ImageClassification, InterpolationMode
 
-from model.evaluation import resize_images
+
+def resize_images(
+    images: Union[Image.Image], new_size: int, convert_to_tensor: bool = False
+) -> Union[List[Image.Image], torch.Tensor]:
+    process_arr = [
+        transforms.Resize(new_size, interpolation=transforms.InterpolationMode.BICUBIC),
+        transforms.CenterCrop(new_size),
+        transforms.ToTensor() if convert_to_tensor else None,
+    ]
+    processor = transforms.Compose([func for func in process_arr if func is not None])
+
+    if isinstance(images, Image.Image):
+        source = [images]
+    elif isinstance(images, List):
+        source = images
+    else:
+        raise ValueError(
+            f"images can either be PIL.Image or List of PIL.Image, but got {type(images)} instead."
+        )
+
+    result = [processor(image) for image in source]
+    if convert_to_tensor:
+        result = torch.stack(result, dim=0)
+    return result
 
 
 class EEGProcessor:
@@ -227,11 +248,6 @@ class EEGImageNetDatasetForReconstruction(EEGImageNetDataset):
         )
         self.resolution: int = config.resolution
 
-        if mode == "val":
-            self.splitter = random.sample(
-                self.splitter, config.get("num_validation_images", 4)
-            )
-
         self.drop_probability: float = config.get("drop_probability", 0.05)
 
     def __getitem__(self, index) -> Dict:
@@ -283,11 +299,7 @@ class EEGImageNetDatasetForReconstructionWithText(EEGImageNetDatasetForReconstru
         if self.mode == "train":
             drops = data["drops"]
             data["text_input_ids"] = self.text_processor(
-                (
-                    ""
-                    if drops
-                    else "best quality, high quality"
-                ),
+                ("" if drops else "best quality, high quality"),
                 max_length=self.text_processor.model_max_length,
                 padding="max_length",
                 truncation=True,
@@ -394,9 +406,9 @@ class ImageDataset(Dataset):
             else None
         )
 
-        self.cond_processor = CLIPImageProcessor.from_pretrained(config.clip_model_path)
+        self.clip_processor = CLIPImageProcessor.from_pretrained(config.clip_model_path)
 
-        self.drop_probability: float = config.drop_probability
+        self.drop_probability: float = config.get("drop_probability", 0.05)
 
     def __len__(self):
         return len(self.meta)
@@ -417,7 +429,7 @@ class ImageDataset(Dataset):
         )
 
         # for vision condition
-        clip_pixel_values: torch.FloatTensor = self.cond_processor(
+        clip_pixel_values: torch.FloatTensor = self.clip_processor(
             images=raw_image, return_tensors="pt"
         ).pixel_values
 
@@ -435,167 +447,3 @@ class ImageDataset(Dataset):
             data["drops"] = drops
 
         return data
-
-
-class TarImageDataset(Dataset):
-    """
-    Dataset for images zipped in tarfiles
-    """
-
-    def __init__(self, mode: str, config: DictConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.mode = mode
-
-        self.resolution: int = config.resolution
-        self.image_root_path = config.image_root_path[mode]
-
-        tarfiles = [
-            os.path.join(self.image_root_path, file)
-            for file in os.listdir(self.image_root_path)
-            if file.endswith("tar")
-        ]
-        self.meta = []
-        for tar in tarfiles:
-            with tarfile.open(tar, "r") as file:
-                self.meta.extend(
-                    [
-                        {"tar": tar, "image": member.name}
-                        for member in file.getmembers()
-                        if member.name.endswith(config.image_ext)
-                    ]
-                )
-
-        self.vae_processor = (
-            transforms.Compose(
-                [
-                    transforms.Resize(
-                        config.resolution,
-                        interpolation=transforms.InterpolationMode.BILINEAR,
-                    ),
-                    transforms.CenterCrop(self.resolution),
-                    transforms.ToTensor(),
-                    transforms.Normalize([0.5], [0.5]),
-                ]
-            )
-            if mode == "train"
-            else None
-        )
-
-        self.cond_processor = CLIPImageProcessor.from_pretrained(
-            config.condition_model_path
-        )
-
-        self.drop_probability: float = config.drop_probability
-
-    def __len__(self):
-        return len(self.meta)
-
-    def __getitem__(self, index) -> Dict:
-        item = self.meta[index]
-        raw_image = Image.open(TarIO.TarIO(item["tar"], item["image"])).convert("RGB")
-
-        # for vae encoder
-        pixel_values = self.vae_processor(raw_image) if self.mode == "train" else None
-
-        # for inference
-        ground_truth: Union[torch.FloatTensor, None] = (
-            resize_images(raw_image, new_size=self.resolution, convert_to_tensor=True)
-            if self.mode == "val" or self.mode == "test"
-            else None
-        )
-
-        # for vision condition
-        clip_pixel_values: torch.FloatTensor = self.cond_processor(
-            images=raw_image, return_tensors="pt"
-        ).pixel_values
-
-        # handle drop to enhance classifier-free guidance
-        drops = torch.rand(1) < self.drop_probability if self.mode == "train" else None
-
-        data = {"clip_pixel_values": clip_pixel_values.squeeze(dim=0)}
-
-        if self.mode == "val" or self.mode == "test":
-            data["ground_truth"] = ground_truth.squeeze(dim=0)
-            data["image_indexes"] = index
-
-        elif self.mode == "train":
-            data["pixel_values"] = pixel_values
-            data["drops"] = drops
-
-        return data
-
-
-class GeneratedImageDataset(Dataset):
-    """
-    For inference of generated images by models
-    """
-
-    def __init__(self, mode: str, config: DictConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.mode = mode
-
-        self.image_root_path: str = config.image_root_path[mode]
-        self.gt_image_root_path: str = config.gt_image_root_path
-        self.gt_image_ext = config.gt_image_ext
-
-        evaluation_model_name = config.evaluation_model.name
-
-        if evaluation_model_name == "model.models.PytorchVisionModel":
-            model_config = OmegaConf.load(
-                os.path.join(
-                    config.evaluation_model.pretrained_model_path, "config.yml"
-                )
-            )
-            self.image_processor = ImageClassification(
-                crop_size=model_config.image_size,
-                resize_size=model_config.image_size,
-                interpolation=InterpolationMode.BICUBIC,
-            )
-
-        elif evaluation_model_name == "model.models.VisionModelWithProjection":
-            self.image_processor = CLIPImageProcessor.from_pretrained(
-                config.evaluation_model.pretrained_model_path
-            )
-        else:
-            raise ValueError(f"Unsupport evaluation model: [{evaluation_model_name}]")
-
-        self.meta: List = [
-            file
-            for file in os.listdir(self.image_root_path)
-            if file.endswith(config.image_ext)
-        ]
-
-    def __len__(self):
-        return len(self.meta)
-
-    def process_images(self, images: Image.Image) -> torch.Tensor:
-        if isinstance(self.image_processor, CLIPImageProcessor):
-            pixel_values = self.image_processor(
-                images, return_tensors="pt"
-            ).pixel_values.squeeze(dim=0)
-        elif isinstance(self.image_processor, ImageClassification):
-            pixel_values = self.image_processor(images)
-        else:
-            raise RuntimeError(
-                f"Invalid image processor type [{type(self.image_processor)}]"
-            )
-
-        return pixel_values
-
-    def __getitem__(self, index) -> Dict:
-        image_name: str = self.meta[index]
-        image_path = os.path.join(self.image_root_path, image_name)
-        gen_image: Image.Image = Image.open(image_path).convert("RGB")
-        gen_pixel_values = self.process_images(gen_image)
-
-        gt_image_name: str = ".".join([image_name.split("-")[0], self.gt_image_ext])
-        gt_image_path = os.path.join(self.gt_image_root_path, gt_image_name)
-        gt_image: Image.Image = Image.open(gt_image_path).convert("RGB")
-        gt_pixel_values = self.process_images(gt_image)
-
-        return {
-            "gen_pixel_values": gen_pixel_values,
-            "gt_pixel_values": gt_pixel_values,
-        }
