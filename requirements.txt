@@ -8,3 +8,4 @@ transformers
 diffusers==0.27.2
 lightning-flash
 accelerate
+open_clip_torch
