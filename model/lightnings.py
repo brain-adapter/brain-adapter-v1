@@ -142,7 +142,7 @@ class LitBrainModel(LitBaseModel):
         self.classifier = nn.Linear(self.model.embed_dim, config.dataset.num_classes)
         self.cross_entropy = nn.CrossEntropyLoss()
 
-        self.cls_ratio = config.lightning.get("cls_ratio", 0.5)
+        self.cls_ratio = config.lightning.get("cls_ratio", 0.08)
 
         self.model.train()
 
@@ -158,10 +158,10 @@ class LitBrainModel(LitBaseModel):
 
         logits: torch.Tensor = self.classifier(eeg_embeds)
 
-        clip_loss = nn.functional.mse_loss(eeg_embeds, image_embeds)
+        feat_loss = nn.functional.mse_loss(eeg_embeds, image_embeds)
         cls_loss = self.cross_entropy(logits, labels)
 
-        loss = clip_loss + cls_loss * self.cls_ratio
+        loss = feat_loss + cls_loss * self.cls_ratio
 
         pred = logits.argmax(dim=-1).detach()
         acc = torch.sum(pred == labels).cpu().item() / len(labels)
@@ -169,7 +169,7 @@ class LitBrainModel(LitBaseModel):
         return {
             "acc": acc,
             "cls_loss": cls_loss,
-            "clip_loss": clip_loss,
+            "feat_loss": feat_loss,
             "loss": loss,
             "eeg_embeds": eeg_embeds,
             "vision_embeds": image_embeds,
@@ -181,12 +181,12 @@ class LitBrainModel(LitBaseModel):
             return super().validation_step(batch, batch_idx)
 
         model_outputs: Dict = self(batch)
-        loss, eeg_embeds, vision_embeds, labels, clip_loss, cls_loss, acc = (
+        loss, eeg_embeds, vision_embeds, labels, feat_loss, cls_loss, acc = (
             model_outputs["loss"],
             model_outputs["eeg_embeds"],
             model_outputs["vision_embeds"],
             batch["labels"],
-            model_outputs["clip_loss"],
+            model_outputs["feat_loss"],
             model_outputs["cls_loss"],
             model_outputs["acc"],
         )
@@ -194,7 +194,7 @@ class LitBrainModel(LitBaseModel):
         batch_size = len(labels)
 
         self.log("val_loss", loss, prog_bar=True, on_epoch=True)
-        self.log("val_clip_loss", clip_loss, prog_bar=False, on_epoch=True)
+        self.log("val_feat_loss", feat_loss, prog_bar=False, on_epoch=True)
         self.log("val_cls_loss", cls_loss, prog_bar=False, on_epoch=True)
         self.log("val_acc", acc, prog_bar=False, on_epoch=True)
 
@@ -876,4 +876,3 @@ class LitMultiAdapterModel(LitDiffusionModel):
                         save_directory, f"{image_indexes[i]}-{subjects[i]}-{j}.png"
                     )
                     image.save(save_path)
-
