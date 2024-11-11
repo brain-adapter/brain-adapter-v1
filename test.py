@@ -46,6 +46,6 @@ def main(config: DictConfig):
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--config", default="configs/train-brain-model.yml", type=str)
+    parser.add_argument("--config", default="configs/test-brain-model.yml", type=str)
     config = OmegaConf.load(parser.parse_args().config)
     main(config)
