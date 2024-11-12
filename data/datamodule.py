@@ -19,10 +19,7 @@ class DataModule(lightning.LightningDataModule):
     def setup(self, stage: str = None):
         if stage == "fit" or stage is None:
             self.trainset = self.dataset_class(mode="train", config=self.config)
-            self.valset = self.dataset_class(
-                mode="test" if self.config.get("merge_train_and_val", False) else "val",
-                config=self.config,
-            )
+            self.valset = self.dataset_class(mode="val", config=self.config)
 
         if stage == "test" or stage is None:
             self.testset = self.dataset_class(mode="test", config=self.config)

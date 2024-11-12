@@ -26,7 +26,7 @@ model: null
 
 dataset: 
   name: data.dataset.EEGImageNetDatasetForReconstruction
-  num_workers: 1 # num_devices * 4
+  num_workers: 2 # num_devices * 4
   resolution: 512
   batch_size: 4
   image_ext: JPEG
