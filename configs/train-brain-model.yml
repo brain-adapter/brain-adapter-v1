@@ -6,9 +6,9 @@ trainer:
 
   checkpoint:
     dirpath: /root/autodl-tmp/ckpts
-    monitor: val_loss
-    filename: lit-{val_loss:.4f}
-    save_top_k: 1
+    monitor: step
+    filename: lit-{step}
+    save_top_k: 5
     mode: min
     every_n_epochs: *interval
     save_last: false
@@ -62,7 +62,7 @@ dataset:
 
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  image_embeds_path: image_embeds.pth # output of `clip_features.py`
+  image_embeds_path: image_embeds.pth # output of `image2embeds.py`
 
   merge_train_and_val: true
 
