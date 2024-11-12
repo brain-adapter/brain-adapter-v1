@@ -6,12 +6,16 @@ trainer:
 logger:
     save_dir: /root/tf-logs
     sub_dir: logs
-    name: brain-model-moe
+    name: brain-model
     version: 5-95-test
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitBrainModel
+  log_keys: 
+    - feat_loss
+    - cls_loss
+    - acc
 
 dataset: 
   name: data.dataset.EEGImageNetFeaturesDataset # Dataset with features to accelarate the distillation process

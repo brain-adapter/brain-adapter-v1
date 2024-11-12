@@ -5,7 +5,7 @@ trainer:
   num_devices: 1
 
   checkpoint:
-    dirpath: /root/autodl-tmp/ckpts
+    dirpath: checkpoints
     monitor: step
     filename: lit-{step}
     save_top_k: 5 # save all and conduct ablation studies
@@ -17,7 +17,7 @@ trainer:
 
 # for Tensorboard logger
 logger:
-    save_dir: /root/tf-logs
+    save_dir: all-logs
     sub_dir: logs
     name: brain-ip-adapter
     version: 5-95-train
@@ -26,17 +26,17 @@ logger:
 lightning:
   name: model.lightnings.LitBrainIPAdapterModel
 
-  diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
+  diffusion_model_path: &diffusion_model_path pretrained/stable-diffusion-v1-5
 
   snr_gamma: 5.0
   num_images_per_prompt: 4
   num_inference_steps: 50
 
-  brain_model_path: /root/autodl-tmp/pretrained/brain-model-moe
+  brain_model_path: pretrained/brain-model
   log_val_images: true
 
 model: 
-  ip_adapter_model_path: /root/autodl-tmp/pretrained/ip-adapter-ada-4m/ip_adapter.bin
+  ip_adapter_model_path: pretrained/ip-adapter-ada-4m/ip_adapter.bin
   projection_config: 
     input_dim: 768
     num_tokens: 4
@@ -50,11 +50,11 @@ dataset:
   image_ext: JPEG
   subject: 0 # MOE is trained on all subjects and there is no need to finetune on a single subject
 
-  eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
+  eeg_data_path: data/eeg-imagenet/eeg_5_95_std.pth
+  splitter_path: data/eeg-imagenet/block_splits_by_image_all.pth
+  image_root_path: data/eeg-imagenet/images
 
-  clip_model_path: /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  clip_model_path: pretrained/clip-vit-large-patch14-336
   diffusion_model_path: *diffusion_model_path
 
   merge_train_and_val: true

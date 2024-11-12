@@ -144,12 +144,12 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--image-root",
-        default="/root/autodl-tmp/data/eeg-imagenet/images",
+        default="data/eeg-imagenet/images",
         type=str,
     )
     parser.add_argument(
         "--clip-model-path",
-        default="/root/autodl-tmp/pretrained/clip-vit-large-patch14-336",
+        default="pretrained/clip-vit-large-patch14-336",
         type=str,
     )
     parser.add_argument(

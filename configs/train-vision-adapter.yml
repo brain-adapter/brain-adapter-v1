@@ -5,10 +5,10 @@ trainer:
   num_devices: 4
 
   checkpoint:
-    dirpath: /root/autodl-tmp/ckpts
+    dirpath: checkpoints
     monitor: step
-    filename: lit-{step}
-    save_top_k: 1
+    filename: vision-adapter-{step}
+    save_top_k: 3
     mode: max
     every_n_train_steps: *interval
     save_last: false
@@ -17,7 +17,7 @@ trainer:
 
 # for Tensorboard logger
 logger:
-    save_dir: /root/tf-logs
+    save_dir: all-logs
     sub_dir: logs
     name: vision-adapter
     version: 0
@@ -25,14 +25,13 @@ logger:
 
 lightning:
   name: model.lightnings.LitVisionAdapterModel
-  diffusion_model_path: &diffusion_model_path /root/autodl-tmp/pretrained/stable-diffusion-v1-5
-  pretrained_model_path: /root/autodl-tmp/pretrained/vision-adapter-1
+  diffusion_model_path: &diffusion_model_path pretrained/stable-diffusion-v1-5
   
   snr_gamma: 5.0
   num_images_per_prompt: 4
   num_inference_steps: 30
 
-  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336
+  clip_model_path: &clip_model_path pretrained/clip-vit-large-patch14-336
 
 model:
   diffusion_model_path: *diffusion_model_path
@@ -49,8 +48,8 @@ dataset:
   image_ext: jpg
 
   image_root_path: 
-    train: /root/autodl-tmp/data/laion-aesthetics/train
-    val: /root/autodl-tmp/data/laion-aesthetics/validation
+    train: data/laion-aesthetics/train
+    val: data/laion-aesthetics/validation
 
   clip_model_path: *clip_model_path
 

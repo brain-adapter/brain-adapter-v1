@@ -1,15 +1,15 @@
 trainer:
   seed: 2024
   check_val_every_n_epoch: &interval 1
-  max_epochs: &max_epochs 30
+  max_epochs: &max_epochs 25
   num_devices: 1
 
   checkpoint:
-    dirpath: /root/autodl-tmp/ckpts
+    dirpath: checkpoints
     monitor: step
-    filename: lit-{step}
+    filename: brain-model-raw-{step}
     save_top_k: 5
-    mode: min
+    mode: max
     every_n_epochs: *interval
     save_last: false
   
@@ -17,17 +17,17 @@ trainer:
 
 # for Tensorboard logger
 logger:
-    save_dir: /root/tf-logs
+    save_dir: all-logs
     sub_dir: logs
-    name: brain-model-moe
-    version: 5-95-train
+    name: brain-model
+    version: 5-95-train 
     default_hp_metric: false
 
 lightning:
   name: model.lightnings.LitBrainModel
 
   pretrained_model_path: null
-  clip_model_path: &clip_model_path /root/autodl-tmp/pretrained/clip-vit-large-patch14-336 # openai/clip-vit-l-14 336 version
+  clip_model_path: &clip_model_path pretrained/clip-vit-large-patch14-336 
 
   log_clip_logits: true # log similarity matrix within a batch during validation loop
   
@@ -60,9 +60,9 @@ dataset:
 
   image_ext: JPEG
 
-  eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
-  splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_all.pth
-  image_embeds_path: image_embeds.pth # output of `image2embeds.py`
+  eeg_data_path: eeg_5_95_std.pth
+  splitter_path: block_splits_by_image_all.pth
+  image_embeds_path: data/image_embeds.pth # output of `image2embeds.py`
 
   merge_train_and_val: true
 

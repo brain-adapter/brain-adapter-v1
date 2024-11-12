@@ -7,7 +7,7 @@ trainer:
   checkpoint:
     dirpath: /root/autodl-tmp/ckpts
     monitor: step
-    filename: lit-{step}
+    filename: brain-adapter-raw-{step}
     save_top_k: 5 # save all and conduct ablation studies
     mode: max
     every_n_epochs: 1
