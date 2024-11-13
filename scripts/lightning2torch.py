@@ -1,5 +1,5 @@
 import os
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from typing import Type
 from pathlib2 import Path
 
@@ -19,16 +19,7 @@ def resolve_model(checkpoint_path: str) -> LitBaseModel:
 
     return model
 
-
-if __name__ == "__main__":
-    parser = ArgumentParser()
-
-    parser.add_argument("--lit-directory", default="ckpts", type=str)
-    parser.add_argument("--save-directory", default="pretrained", type=str)
-    parser.add_argument("--del-lit", default=False, type=bool)
-
-    args = parser.parse_args()
-
+def main(args:Namespace):
     src: str = args.lit_directory
     dst: str = args.save_directory
     del_lit: bool = args.del_lit
@@ -43,3 +34,14 @@ if __name__ == "__main__":
 
         if del_lit:
             os.remove(ckpt_path)
+
+if __name__ == "__main__":
+    parser = ArgumentParser()
+
+    parser.add_argument("--lit-directory", default="ckpts", type=str)
+    parser.add_argument("--save-directory", default="pretrained", type=str)
+    parser.add_argument("--del-lit", default=False, type=bool)
+
+    args = parser.parse_args()
+
+    main(args)
