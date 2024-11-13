@@ -260,14 +260,14 @@ class EEGImageNetDatasetForReconstruction(EEGImageNetDataset):
                 label for label in selected_labels if label in self.labels
             ]
             # filter splitters according to the selected labels
-            self.splitter = [
+            self.splitters = [
                 i
-                for i in self.splitter
+                for i in self.splitters
                 if self.labels[self.dataset[i]["label"]] in selected_labels
             ]
 
     def __getitem__(self, index) -> Dict:
-        idx = self.splitter[index]
+        idx = self.splitters[index]
         item: Dict = self.dataset[idx]
 
         image_path = os.path.join(
