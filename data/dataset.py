@@ -75,7 +75,8 @@ class EEGImageNetDataset(Dataset):
         loaded = torch.load(config.eeg_data_path)
         dataset = loaded["dataset"]
 
-        self.images = loaded["images"]
+        self.images: List[str] = loaded["images"]
+        self.labels: List[str] = loaded["labels"]
         self.image_root_path: str = config.image_root_path
         self.image_ext: str = config.image_ext
 
@@ -97,16 +98,18 @@ class EEGImageNetDataset(Dataset):
         else:
             self.dataset = dataset
 
-        # filter splitter
-        splitter: list = torch.load(config.splitter_path)["splits"][0][mode]
+        # filter splitters
+        splitters: list = torch.load(config.splitter_path)["splits"][0][mode]
         if (
             config.get("merge_train_and_val", False) and mode == "train"
         ):  # whether to merge the training and validation set
-            splitter.extend(torch.load(config.splitter_path)["splits"][0]["val"])
+            splitters.extend(torch.load(config.splitter_path)["splits"][0]["val"])
 
-        splitter = [i for i in splitter if i < len(self.dataset)]
-        self.splitter = [
-            i for i in splitter if 450 <= self.dataset[i]["eeg"].shape[-1] <= 600
+        splitters = [i for i in splitters if i < len(self.dataset)]
+        # filter data following
+        # https://github.com/perceivelab/eeg_visual_classification/blob/main/eeg_signal_classification.py
+        self.splitters = [
+            i for i in splitters if 450 <= self.dataset[i]["eeg"].shape[-1] <= 600
         ]
 
         # processors for eeg and images
@@ -121,10 +124,10 @@ class EEGImageNetDataset(Dataset):
         )
 
     def __len__(self):
-        return len(self.splitter)
+        return len(self.splitters)
 
     def __getitem__(self, index) -> Dict:
-        idx = self.splitter[index]
+        idx = self.splitters[index]
         item: Dict = self.dataset[idx]
 
         image_path = os.path.join(
@@ -249,6 +252,19 @@ class EEGImageNetDatasetForReconstruction(EEGImageNetDataset):
         self.resolution: int = config.resolution
 
         self.drop_probability: float = config.get("drop_probability", 0.05)
+
+        selected_labels: List[str] = config.get("selected_labels", None)
+
+        if selected_labels is not None:
+            selected_labels = [
+                label for label in selected_labels if label in self.labels
+            ]
+            # filter splitters according to the selected labels
+            self.splitter = [
+                i
+                for i in self.splitter
+                if self.labels[self.dataset[i]["label"]] in selected_labels
+            ]
 
     def __getitem__(self, index) -> Dict:
         idx = self.splitter[index]

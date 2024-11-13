@@ -32,6 +32,10 @@ dataset:
   image_ext: JPEG
   subject: 1 # 1, 2, 3, 4, 5, 6
 
+  selected_labels: 
+    - n03888257
+    - n02607072
+
   eeg_data_path: /root/autodl-tmp/data/eeg-imagenet/eeg_5_95_std.pth
   splitter_path: /root/autodl-tmp/data/eeg-imagenet/block_splits_by_image_single.pth # splitter for a single subject
   image_root_path: /root/autodl-tmp/data/eeg-imagenet/images
