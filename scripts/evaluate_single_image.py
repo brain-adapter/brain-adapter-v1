@@ -49,7 +49,7 @@ GPU = (
 )
 
 
-def get_aesthetic_score(image: Image.Image):
+def get_aesthetic_score(image: Image.Image, ref_image: Image.Image):
     amodel = get_aesthetic_model(clip_model="vit_l_14")
     amodel.eval()
 
@@ -61,15 +61,20 @@ def get_aesthetic_score(image: Image.Image):
     amodel.to(GPU)
     model.to(GPU)
     pixel_values = processor(image).to(GPU).unsqueeze(dim=0)
+    ref_values = processor(ref_image).to(GPU).unsqueeze(dim=0)
 
     with torch.inference_mode():
         image_features = model.encode_image(pixel_values)
         image_features /= image_features.norm(dim=-1, keepdim=True)
-        prediction:torch.Tensor = amodel(image_features).cpu().squeeze(dim=0)
+        prediction: torch.Tensor = amodel(image_features).cpu().squeeze(dim=0)
+
+        ref_features = model.encode_image(ref_values)
+        ref_features /= ref_features.norm(dim=-1, keepdim=True)
+        ref_prediction: torch.Tensor = amodel(ref_features).cpu().squeeze(dim=0)
 
     del model, amodel
 
-    return prediction.item()
+    return prediction.item(), ref_prediction.item()
 
 
 def get_clip_similarity(
@@ -96,7 +101,7 @@ def get_clip_similarity(
             .cpu()
             .squeeze(dim=0)
         )
-    
+
     del model
 
     return result.item()
@@ -107,10 +112,10 @@ def main(args: Namespace):
     ref_image = Image.open(args.ref_image_path).convert("RGB")
     clip_model_path: str = args.clip_model_path
 
-    aesthetic_score = get_aesthetic_score(gen_image)
+    a_score, ref_score = get_aesthetic_score(gen_image, ref_image)
     clip_similarity = get_clip_similarity(clip_model_path, gen_image, ref_image)
 
-    print(f"aesthetic_score: [{aesthetic_score}]")
+    print(f"aesthetic_score(generate): [{a_score}], aesthetic_score(ref): [{ref_score}]")
     print(f"clip_similarity: [{clip_similarity}]")
 
 
